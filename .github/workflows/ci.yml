@@ -16,7 +16,23 @@ jobs:
         with:
           submodules: true
       - name: Build and run tests
-        run: make -C tracker -f Makefile.test -j4
+        run: |
+          log="$RUNNER_TEMP/tracker-tests.log"
+          if make -C tracker -f Makefile.test -j4 > "$log" 2>&1; then
+            tail -n 30 "$log"
+          else
+            tail -n 100 "$log"
+            python3 - "$log" <<'PY'
+          import pathlib, re, sys
+          lines = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+          failures = [i for i, line in enumerate(lines) if re.search(r"error:|undefined reference|FAILED|is NOT correct|FATAL ERROR", line)]
+          for i in failures[-8:]:
+              message = "\n".join(lines[max(0, i - 2):i + 4])[:1800]
+              message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print("::error::" + message)
+          PY
+            exit 1
+          fi
 
   web-contract:
     runs-on: ubuntu-latest

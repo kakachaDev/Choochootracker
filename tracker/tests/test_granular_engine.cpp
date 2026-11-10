@@ -74,7 +74,7 @@ TEST_CASE("Granular engine voices receive notes, FX and release through the real
   for (float v : out) CHECK(v == 0);
 }
 
-TEST_CASE("Granular instrument page loads WAVs and grows grain memory before editing the count") {
+TEST_CASE("Granular instrument page opens the WAV browser and grows memory before editing the count") {
   struct Restore {
     ChipNomadState* state = chipnomadState;
     int instrument = cInstrument, modified = projectModified;
