@@ -730,7 +730,7 @@ TEST_CASE_FIXTURE(StickLiveFixture, "Settings menus and audio controls align") {
   mockAudioCpuLoad = 37;
   screenAudioSettings.fullRedraw();
   screen = mockScreenData;
-  CHECK(screen->rows == 6);
+  CHECK(screen->rows == 7);
   gfxClear();
   screen->drawStatic();
   screen->drawField(0, 0, CellState::focus);

@@ -49,6 +49,7 @@ static void audioCursor(int, int row) {
   else if (row == 2) gfxCursor(15, 7, 16);
   else if (row == 4) gfxCursor(23, 8, 3); // "OFF"/"ON" value width
   else if (row == 5) gfxCursor(3, 9, 13);
+  else if (row == 6) gfxCursor(0, 11, 11);
 }
 static void audioField(int, int row, CellState state) {
   const ColorScheme cs = appSettings.colorScheme;
@@ -77,6 +78,9 @@ static void audioField(int, int row, CellState state) {
   } else if (row == 5) {
     gfxSetFgColor(state == CellState::focus ? cs.textValue : cs.textLabel);
     gfxPrint(0, 9, " - Input devices");
+  } else if (row == 6) {
+    gfxSetFgColor(state == CellState::focus ? cs.textValue : cs.textLabel);
+    gfxPrint(0, 11, "Performance");
   } else {
     gfxSetFgColor(cs.textLabel); gfxPrint(0, 4, "CPU load");
     drawAudioCpuLoad();
@@ -156,6 +160,11 @@ static int audioSelectOutput(CellEditAction action) {
   return 1;
 }
 static int audioEdit(int, int row, CellEditAction action) {
+  if (row == 6) {
+    if (action != CellEditAction::tap) return 0;
+    screenSetup(&screenPerformance, 0);
+    return 1;
+  }
   if (row == 4) {
     if (action == CellEditAction::tap) {
       audioInputSetEnabled(!appSettings.audioInputEnabled);
@@ -212,8 +221,8 @@ static int audioEdit(int, int row, CellEditAction action) {
   if (settingsSave() != 0) screenMessage(MESSAGE_TIME_ERROR, "Could not save audio setting");
   return 1;
 }
-static int audioCellValid(int, int row) { return row == 0 || row == 1 || row == 2 || row == 4 || row == 5; }
-static ScreenData audioData = {6, 0, 0, 0, -1, 0, 0, 0, 0, ScreenPlaybackLevel::none, columnCount, audioStatic, audioCursor, NULL, noHeader, noHeader, audioField, audioEdit, NULL, NULL, audioCellValid, NULL};
+static int audioCellValid(int, int row) { return row == 0 || row == 1 || row == 2 || row == 4 || row == 5 || row == 6; }
+static ScreenData audioData = {7, 0, 0, 0, -1, 0, 0, 0, 0, ScreenPlaybackLevel::none, columnCount, audioStatic, audioCursor, NULL, noHeader, noHeader, audioField, audioEdit, NULL, NULL, audioCellValid, NULL};
 
 static void controlsStatic(void) { gfxSetFgColor(appSettings.colorScheme.textTitles); gfxPrint(0, 0, "CONTROLS"); gfxPrint(0, 2, "Keys repeat"); }
 #ifdef TOUCH_INPUT

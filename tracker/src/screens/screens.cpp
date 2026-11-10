@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include "screens.h"
+#include "audio_performance.h"
 #include "field_style.h"
 #include "screen_settings.h"
 #include "screen_audio_input.h"
@@ -117,6 +118,7 @@ void drawScreenMap() {
 }
 
 void screenSetup(const AppScreen* screen, int input) {
+  if (screen != &screenPerformance) audioPerformance::setEnabled(false);
   if (canonicalSimplifiedActive && chipnomadState &&
       chipnomadState->project.viewMode == ViewMode::classic && screen == &screenChain)
     screen = &screenPhrase;

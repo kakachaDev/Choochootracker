@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <string.h>
 #include "audio_manager.h"
+#include "audio_performance.h"
 #include "app.h"
 #include "audio_input_manager.h"
 #include "output_safety_limiter.h"
@@ -126,6 +127,8 @@ static void updatePlaybackMuteFlags(void) {
 
 static void audioCallback(int16_t* buffer, int stereoSamples) {
   const auto startedAt = std::chrono::steady_clock::now();
+  audioPerformance::Callback performance(stereoSamples, aSampleRate,
+    (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(startedAt.time_since_epoch()).count());
 
   // Feed the Link HostTimeFilter BEFORE any early return so the filter
   // keeps seeing (sampleCounter, hostTime) pairs even while playback is
@@ -162,8 +165,11 @@ static void audioCallback(int16_t* buffer, int stereoSamples) {
 
   // Audio input monitoring (Phase 2.4): route armed capture into the output
   // when enabled. No-op (single atomic load) when monitor is off.
-  audioInputManager.mixMonitor(floatBuffer, stereoSamples);
-  outputLimiter.process(floatBuffer, buffer, stereoSamples);
+  {
+    audioPerformance::Span performanceOutput(audioPerformance::output);
+    audioInputManager.mixMonitor(floatBuffer, stereoSamples);
+    outputLimiter.process(floatBuffer, buffer, stereoSamples);
+  }
 
   const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::steady_clock::now() - startedAt).count();

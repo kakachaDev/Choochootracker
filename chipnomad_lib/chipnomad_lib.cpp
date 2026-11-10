@@ -1,5 +1,6 @@
 #include "audio_monitor.h"
 #include "chipnomad_lib.h"
+#include "audio_performance.h"
 #include <type_traits>
 #include "soundbank_fx.h"
 #include "chipnomad_lib_live_stick.h"
@@ -2201,8 +2202,10 @@ static const float* sidechainFor(ChipNomadState* state, int detect) {
 // Instrument EQ comes first on the track, so sidechains and inserts hear it.
 static void processTrackEQ(ChipNomadState* state, int frames) {
   for (int t = 0; t < state->audioProject.tracksCount; ++t)
-    if (state->trackEQActive[t] && state->insertActive[t])
+    if (state->trackEQActive[t] && state->insertActive[t]) {
+      audioPerformance::Span performance(audioPerformance::trackEQ, audioPerformance::trackEQBase + t);
       state->trackEQ[t].process(state->insertBuffer + (size_t)t * state->mixBufferSize, frames);
+    }
 }
 
 static void captureSidechains(ChipNomadState* state, int frames) {
@@ -2227,6 +2230,8 @@ static void renderChipTracks(ChipNomadState* state, float* output, int frames) {
     if (type != InstrumentType::AY1 && type != InstrumentType::AY2 && type != InstrumentType::AYSample) continue;
     SoundChip* chip = state->chips[chipIdx];
     if (!chip) continue;
+    audioPerformance::Span performance(audioPerformance::voices,
+      audioPerformance::trackVoiceBase + chipIdx, audioPerformance::instrumentBase + instrumentIdx);
     float* rendered = state->mixBuffer;
     chip->render(rendered, frames);
     float gain = state->audioProject.trackVolume[chipIdx] / 100.0f * state->audioProject.instruments[instrumentIdx].volume / 255.0f;
@@ -2249,6 +2254,8 @@ static void renderChipTracks(ChipNomadState* state, float* output, int frames) {
     SoundChip* chip = state->layerAYChips[owner];
     const int physicalTrack = voiceOwnerTrack(owner);
     if (!chip || !trackNeedsRender(state, physicalTrack)) continue;
+    audioPerformance::Span performance(audioPerformance::voices,
+      audioPerformance::trackVoiceBase + physicalTrack, audioPerformance::instrumentBase + track->note.instrument);
     float* rendered = state->mixBuffer;
     chip->render(rendered, frames);
     processLayerVoiceEQ(state, owner, 0, rendered, frames);
@@ -2277,6 +2284,8 @@ static void renderMonoVoiceTracks(ChipNomadState* state, Voice* const voices[][C
     for (int slot = 0; slot < voiceTrack->chordVoiceCount; ++slot) {
       Voice* voice = voices[owner][slot];
       if (!voice || !voice->active()) continue;
+      audioPerformance::Span performance(audioPerformance::voices,
+        audioPerformance::trackVoiceBase + trackIdx, audioPerformance::instrumentBase + voiceTrack->note.instrument);
       float* rendered = state->mixBuffer;
       voice->render(rendered, frames);
       if (owner >= PROJECT_MAX_TRACKS) {
@@ -2310,6 +2319,8 @@ static void renderStereoVoiceTracks(ChipNomadState* state, Voice* const voices[]
     for (int slot = 0; slot < (includeReleaseSlots ? CHORD_MAX_VOICES : voiceTrack->chordVoiceCount); ++slot) {
       Voice* voice = voices[owner][slot];
       if (!voice || !voice->active()) continue;
+      audioPerformance::Span performance(audioPerformance::voices,
+        audioPerformance::trackVoiceBase + trackIdx, audioPerformance::instrumentBase + voiceTrack->note.instrument);
       float* rendered = state->mixBuffer;
       voice->render(rendered, frames);
       processLayerVoiceEQ(state, owner, slot, rendered, frames);
@@ -2362,7 +2373,7 @@ static void processTrackInserts(ChipNomadState* state, float* output, int frames
       sidechainFor(state, state->insertValues[t][0][5]),
       sidechainFor(state, state->insertValues[t][1][5])
     };
-    state->insertChains[t]->process(samples, frames, state->insertValues[t], sidechain);
+    state->insertChains[t]->process(samples, frames, state->insertValues[t], sidechain, t);
     if ((state->audioInputRoutedTrackMask | state->audioModTrackMask) & (1u << t))
       memcpy(state->audioInputTrackCurrent + (size_t)t * state->mixBufferSize,
              samples, (size_t)frames * 2 * sizeof(float));
@@ -2410,6 +2421,7 @@ static void processMasterMix(ChipNomadState* state, float* output, int frames,
   if (eq) {
     if (!state->masterEQActive) state->masterEQ.reset();
     state->masterEQ.configure(state->audioProject.masterEQ);
+    audioPerformance::Span performance(audioPerformance::masterEQ);
     state->masterEQ.process(output, frames);
   }
   state->masterEQActive = eq;
@@ -2432,7 +2444,12 @@ int chipnomadRender(ChipNomadState* state, float* buffer, int samples, const flo
   while (samplesLeft > 0) {
     uint64_t dueMicros = callbackStartMicros +
       (uint64_t)((double)(samples - samplesLeft) * 1000000.0 / state->sampleRate);
-    if ((int)state->frameSampleCounter == 0 && advancePlaybackFrame(state, dueMicros)) {
+    bool stopped = false;
+    if ((int)state->frameSampleCounter == 0) {
+      audioPerformance::Span performance(audioPerformance::sequencer);
+      stopped = advancePlaybackFrame(state, dueMicros);
+    }
+    if (stopped) {
       // Finish the output transition even when all voices are already stopped.
       // Keep the clock at a boundary so an idle callback cannot resume stale
       // engine output, and queued starts are consumed on the next callback.
@@ -2517,6 +2534,8 @@ int chipnomadRender(ChipNomadState* state, float* buffer, int samples, const flo
       int instrument=voiceOwnerState(state,t)->note.instrument;
       bool dx7Selected=instrument!=EMPTY_VALUE_8&&state->audioProject.instruments[instrument].type==InstrumentType::DX7;
       if (!part || (!part->active() && !dx7Selected)) continue;
+      audioPerformance::Span performance(audioPerformance::voices,
+        audioPerformance::trackVoiceBase + physicalTrack, audioPerformance::instrumentBase + instrument);
       float* rendered = state->mixBuffer;
       part->render(rendered,frames);
       if(!trackNeedsRender(state, physicalTrack))continue;
@@ -2545,6 +2564,8 @@ int chipnomadRender(ChipNomadState* state, float* buffer, int samples, const flo
     renderMonoVoiceTracks(state,state->sidVoices,output,frames);
     if (state->opllPreviewTrack >= 0 && trackNeedsRender(state, state->opllPreviewTrack)) {
       const int track = state->opllPreviewTrack;
+      audioPerformance::Span performance(audioPerformance::voices, audioPerformance::trackVoiceBase + track,
+        audioPerformance::instrumentBase + state->playbackState.tracks[track].note.instrument);
       bool opl = state->chipPreviewType == InstrumentType::Monk || isOPL(state->chipPreviewType)||isFourOp(state->chipPreviewType);
       if(state->chipPreviewType==InstrumentType::Monk)state->monkPreview->render(state->mixBuffer,frames);else if(state->chipPreviewType==InstrumentType::SID)state->sidPreview->render(state->mixBuffer,frames);else if(state->chipPreviewType==InstrumentType::DX7)state->dx7Preview->render(state->mixBuffer,frames);else if(isFourOp(state->chipPreviewType))state->fourOpPreview->render(state->mixBuffer,frames);else if (opl) state->oplPreview->render(state->mixBuffer,frames);else if(isSimpleChip(state->chipPreviewType))state->simpleChipPreview->render(state->mixBuffer,frames);else state->opllPreview->render(state->mixBuffer, frames);
       float gain = state->audioProject.trackVolume[track] / 100.0f * (opl ? 1.0f : 0.25f);

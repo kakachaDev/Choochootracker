@@ -75,7 +75,7 @@ class InsertChain {
   uint16_t sync(const InsertConfig config[2], InsertAutomation*, bool rendered = true);
   bool active() const;
   void process(float* interleaved, int frames, const uint8_t effective[2][8],
-               const float* sidechain[2] = nullptr);
+               const float* sidechain[2] = nullptr, int performanceTrack = -1);
 
  private:
   struct Impl;

@@ -1,5 +1,6 @@
 #include "formant_filter.h"
 #include "insert_fx.h"
+#include "audio_performance.h"
 #include "beads_insert.h"
 #include "synth/audio_math.h"
 #include <algorithm>
@@ -993,8 +994,11 @@ bool InsertChain::active() const {
     if (s.config.module || s.module || s.switching) return true;
   return false;
 }
-void InsertChain::process(float* data, int frames, const uint8_t v[2][8], const float* sidechain[2]) {
+void InsertChain::process(float* data, int frames, const uint8_t v[2][8], const float* sidechain[2], int performanceTrack) {
   if (!ready()) return;
-  for (int slot = 0; slot < 2; ++slot)
+  for (int slot = 0; slot < 2; ++slot) {
+    audioPerformance::Span performance(performanceTrack >= 0 ? audioPerformance::inserts : audioPerformance::masterInsert1 + slot,
+      performanceTrack >= 0 ? audioPerformance::trackInsertBase + performanceTrack * 2 + slot : -1);
     impl_->process(impl_->slots[slot], data, frames, v[slot], sidechain ? sidechain[slot] : nullptr);
+  }
 }

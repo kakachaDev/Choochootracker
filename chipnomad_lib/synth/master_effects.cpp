@@ -1,4 +1,5 @@
 #include "master_effects.h"
+#include "../audio_performance.h"
 
 #include <algorithm>
 #include <math.h>
@@ -132,6 +133,7 @@ void MasterEffects::process(float* reverbBus, float* delayBus, float* output,
     delayTailFrames_ = delayTailFrames_ > frames ? delayTailFrames_ - frames : 0;
 
   if (delayBus && !delayLine_.empty()) {
+    audioPerformance::Span performance(audioPerformance::delay);
     size_t capacity = delayLine_.size() / 2;
     uint8_t algorithm = project->delayAlgorithm <= 2 ? project->delayAlgorithm : 0;
     if (algorithm != activeDelayAlgorithm_) {
@@ -339,6 +341,7 @@ void MasterEffects::process(float* reverbBus, float* delayBus, float* output,
   }
 
   if (reverbBus) {
+    audioPerformance::Span performance(audioPerformance::reverb);
     uint8_t algorithm = project->reverbAlgorithm == 1 ? 1 : 0;
     if (algorithm != activeReverbAlgorithm_) {
       reverbTailFrames_ = 0;

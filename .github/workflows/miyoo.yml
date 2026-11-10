@@ -1,6 +1,15 @@
 name: MiyooPorts
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/miyoo.yml'
+      - 'chipnomad_lib/**'
+      - 'tracker/src/**'
+      - 'tracker/Makefile.common'
+      - 'tracker/Makefile.miyooports'
   workflow_dispatch:
     inputs:
       release_tag:
