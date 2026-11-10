@@ -135,6 +135,12 @@ void fileBrowserSetup(const char* title, const char* extension, const char*,
   mockBrowserExtension = extension;
 }
 
+void fileBrowserSetupWithPreview(const char* title, const char* extension, const char* startPath,
+                                void (*fileCallback)(const char*), void (*cancelCallback)(void),
+                                void (*)(const char*), int) {
+  fileBrowserSetup(title, extension, startPath, fileCallback, cancelCallback);
+}
+
 void fileBrowserSetupFolderMode(const char* title, const char*, const char*,
                                 const char* extension, void (*)(const char*),
                                 void (*)(void)) {

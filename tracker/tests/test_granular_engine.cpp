@@ -2,6 +2,9 @@
 #include "synth/granular_voice.h"
 #include "chipnomad_lib.h"
 #include "project.h"
+#include "app.h"
+#include "screens/screen_instrument.h"
+#include "mocks/app_ui_mock.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -69,4 +72,35 @@ TEST_CASE("Granular engine voices receive notes, FX and release through the real
   chipnomadQueuePlaybackStop(state.get());
   for (int b = 0; b < 8; ++b) chipnomadRender(state.get(), out, 512);
   for (float v : out) CHECK(v == 0);
+}
+
+TEST_CASE("Granular instrument page loads WAVs and grows grain memory before editing the count") {
+  struct Restore {
+    ChipNomadState* state = chipnomadState;
+    int instrument = cInstrument, modified = projectModified;
+    const AppScreen* screen = currentScreen;
+    ~Restore() {
+      chipnomadState = state; cInstrument = instrument;
+      currentScreen = screen; projectModified = modified;
+    }
+  } restore;
+  auto state = std::unique_ptr<ChipNomadState, decltype(&chipnomadDestroy)>(chipnomadCreate(), chipnomadDestroy);
+  REQUIRE(state);
+  chipnomadState = state.get();
+  cInstrument = 0;
+  currentScreen = &screenInstrument;
+  getInstrumentFunctions(InstrumentType::Granular).init(&state->project.instruments[0]);
+  chipnomadInitChips(state.get(), 48000, nullptr);
+  auto& page = screenInstrumentGranular;
+  page.drawField(1, 5, CellState::focus);
+  CHECK(std::string(mockGfxCells[9] + 25, 2) == "16");
+  REQUIRE(page.onEdit(1, 5, CellEditAction::increase) == 1);
+  CHECK(state->project.instruments[0].chip.granular.grains == 17);
+  CHECK(state->granularVoices[0][0]->capacity() >= 17);
+  REQUIRE(page.onEdit(0, 6, CellEditAction::decrease) == 1);
+  CHECK(state->project.instruments[0].chip.granular.scanPercent == -1);
+  REQUIRE(page.onEdit(0, 3, CellEditAction::tap) == 1);
+  CHECK(std::string(mockBrowserTitle) == "LOAD GRAIN SOURCE");
+  CHECK(std::string(mockBrowserExtension) == ".wav");
+  CHECK(currentScreen == &screenFileBrowser);
 }
