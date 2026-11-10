@@ -539,6 +539,7 @@ void setupInstrument(PlaybackState* state, int trackIdx) {
     case InstrumentType::Plaits:
     case InstrumentType::PlaitsAlt:
     case InstrumentType::Sample:
+    case InstrumentType::Granular:
       break;
     case InstrumentType::none:
       // No setup needed

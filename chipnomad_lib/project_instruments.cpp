@@ -267,9 +267,29 @@ static int initSampleInstrument(Instrument* instrument) {
 }
 
 static int freeSampleInstrument(Instrument* instrument) {
-  free(instrument->chip.sample.data);
+  free(instrumentPCMSettings(instrument)->data);
   freeCommon(instrument);
   return 0;
+}
+
+static int initGranularInstrument(Instrument* instrument) {
+  initCommon(instrument);
+  instrument->type = InstrumentType::Granular;
+  auto& g = instrument->chip.granular;
+  g.sample.end = 255;
+  g.sample.speedPercent = 100;
+  g.grains = 16;
+  g.sizeMs = 80;
+  g.scatter = 32;
+  g.width = 128;
+  initVoicePostSettings(&g.sample);
+  g.sample.filterEnabled = 1;
+  return 0;
+}
+
+static const char* modNameGranular(int index) {
+  static const char* names[] = {"Off", "Volume", "Pitch", "Position", "Size", "Scan", "Scatter", "PitRnd", "Width", "Cutoff", "Reso"};
+  return names[index];
 }
 
 static const char* modNameSCWF(int modIndex) {
@@ -528,6 +548,7 @@ static const InstrumentModDestination destAY1[] = {N, D("Volume", instrumentNoFX
 static const InstrumentModDestination destAY2[] = {N, D("Volume", instrumentNoFX,255,InstrumentMotionValue::raw), D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw), D("TonePit",instrumentNoFX,0,InstrumentMotionValue::raw), D("Noise",instrumentNoFX,0,InstrumentMotionValue::raw), D("EnvPit",instrumentNoFX,0,InstrumentMotionValue::raw), D("SoftPit",instrumentNoFX,0,InstrumentMotionValue::raw), D("FMDepth",instrumentNoFX,0,InstrumentMotionValue::raw), D("PulseW",instrumentNoFX,0,InstrumentMotionValue::raw), D("PulseL",instrumentNoFX,0,InstrumentMotionValue::raw), D("WavIdx",instrumentNoFX,0,InstrumentMotionValue::raw)};
 static const InstrumentModDestination destAYSample[] = {N, D("Volume",instrumentNoFX,255,InstrumentMotionValue::raw), D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw), D("SmplPit",instrumentNoFX,0,InstrumentMotionValue::raw), D("TonePit",instrumentNoFX,0,InstrumentMotionValue::raw), D("Noise",instrumentNoFX,0,InstrumentMotionValue::raw)};
 static const InstrumentModDestination destBraids[] = {N,D("Volume",instrumentNoFX,255,InstrumentMotionValue::raw),D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw),D("Timbre",fxBTM,16384,InstrumentMotionValue::raw),D("Color",fxBCL,16384,InstrumentMotionValue::raw),D("Cutoff",fxBCF,FILTER_CUTOFF_MAX_HZ,InstrumentMotionValue::cutoff),D("Reso",fxBRS,255,InstrumentMotionValue::raw)};
+static const InstrumentModDestination destGranular[] = {N,D("Volume",instrumentNoFX,255,InstrumentMotionValue::raw),D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw),D("Position",fxSST,255,InstrumentMotionValue::raw),D("Size",fxSEN,2000,InstrumentMotionValue::raw),D("Scan",fxSSP,400,InstrumentMotionValue::raw),D("Scatter",instrumentNoFX,255,InstrumentMotionValue::raw),D("PitRnd",instrumentNoFX,2400,InstrumentMotionValue::raw),D("Width",instrumentNoFX,255,InstrumentMotionValue::raw),D("Cutoff",fxSCF,FILTER_CUTOFF_MAX_HZ,InstrumentMotionValue::cutoff),D("Reso",fxSRS,255,InstrumentMotionValue::raw)};
 static const InstrumentModDestination destSample[] = {N,D("Volume",instrumentNoFX,255,InstrumentMotionValue::raw),D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw),D("Start",fxSST,255,InstrumentMotionValue::raw),D("End",fxSEN,255,InstrumentMotionValue::raw),D("Speed",fxSSP,500,InstrumentMotionValue::speed),D("Loop",fxSLP,4,InstrumentMotionValue::raw),D("Cutoff",fxSCF,FILTER_CUTOFF_MAX_HZ,InstrumentMotionValue::cutoff),D("Reso",fxSRS,255,InstrumentMotionValue::raw)};
 static const InstrumentModDestination destPlaits[] = {N,D("Volume",instrumentNoFX,255,InstrumentMotionValue::raw),D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw),D("Harmonic",fxPHA,16384,InstrumentMotionValue::raw),D("Timbre",fxPTM,16384,InstrumentMotionValue::raw),D("Morph",fxPMO,16384,InstrumentMotionValue::raw),D("AuxMix",fxPAX,255,InstrumentMotionValue::raw),D("Cutoff",fxPCF,FILTER_CUTOFF_MAX_HZ,InstrumentMotionValue::cutoff),D("Reso",fxPRS,255,InstrumentMotionValue::raw)};
 static const InstrumentModDestination destSCWF[] = {N,D("Volume",instrumentNoFX,255,InstrumentMotionValue::raw),D("Pitch",instrumentNoFX,0,InstrumentMotionValue::raw),D("Detune",fxSDT,255,InstrumentMotionValue::raw),D("Mix",fxSMX,255,InstrumentMotionValue::raw),D("Cutoff",fxSCF2,FILTER_CUTOFF_MAX_HZ,InstrumentMotionValue::cutoff),D("Reso",fxSRS2,255,InstrumentMotionValue::raw)};
@@ -549,6 +570,7 @@ static const InstrumentFX fxAY1[]={F(fxAYM,"AYM"),F(fxNOI,"NOI"),F(fxNOA,"NOA"),
 static const InstrumentFX fxAY2[]={F(fxAYM,"AYM"),F(fxNOI,"NOI"),F(fxNOA,"NOA"),F(fxTNN,"TNN"),F(fxTNP,"TNP"),F(fxTNF,"TNF"),F(fxTRT,"TRT"),F(fxEAU,"EAU"),F(fxENN,"ENN"),F(fxENP,"ENP"),F(fxENF,"ENF"),F(fxERT,"ERT"),F(fxSFT,"SFT"),F(fxSFN,"SFN"),F(fxSFP,"SFP"),F(fxSFF,"SFF"),F(fxSRT,"SRT"),F(fxSFM,"SFM"),F(fxPWM,"PWM"),F(fxSPL,"SPL"),F(fxSWT,"SWT")};
 static const InstrumentFX fxAYSample[]={F(fxAYM,"AYM"),F(fxNOI,"NOI"),F(fxNOA,"NOA"),F(fxTNN,"TNN"),F(fxTNP,"TNP"),F(fxTNF,"TNF"),F(fxTRT,"TRT"),F(fxSFN,"SFN"),F(fxSFP,"SFP"),F(fxSFF,"SFF"),F(fxSMS,"SMS")};
 static const InstrumentFX fxBraids[]={F(fxBMD,"BMD"),F(fxBTM,"BTM"),F(fxBCL,"BCL"),F(fxBCF,"BCF"),F(fxBRS,"BRS")};
+static const InstrumentFX fxGranular[]={F(fxSPT,"SPT"),F(fxSST,"SST"),F(fxSEN,"SEN"),F(fxSSP,"SSP"),F(fxSVL,"SVL"),F(fxSCF,"SCF"),F(fxSRS,"SRS")};
 static const InstrumentFX fxSample[]={F(fxSLP,"SPL"),F(fxSLI,"SLI"),F(fxSPT,"SPT"),F(fxSST,"SST"),F(fxSTA,"STA"),F(fxSEN,"SEN"),F(fxSVL,"SVL"),F(fxSCF,"SCF"),F(fxSRS,"SRS"),F(fxSSP,"SSP"),F(fxRNS,"RNS"),F(fxLST,"LST")};
 static const InstrumentFX fxSCWF[]={F(fxSDT,"SDT"),F(fxSMX,"SMX"),F(fxSCF2,"SCF"),F(fxSRS2,"SRS")};
 static const InstrumentFX fxBYOWTBL[]={F(fxSDT,"SDT"),F(fxSMX,"SMX"),F(fxBIA,"BIA"),F(fxBIB,"BIB"),F(fxSCF2,"SCF"),F(fxSRS2,"SRS")};
@@ -599,6 +621,7 @@ static const InstrumentDefinition instrumentDefinitions[] = {
   {"Layer",InstrumentCategory::utility,InstrumentScreenKind::layer,destLayer,COUNT(destLayer),fxLayer,COUNT(fxLayer),{7,modNameNone,initLayerInstrument,freeNoneInstrument,0,0}},
   {"DigiSophie",InstrumentCategory::drums,InstrumentScreenKind::drumSynth,destDigiSophie,COUNT(destDigiSophie),fxDrumSynth,COUNT(fxDrumSynth),{10,modNameDigiSophie,initDigiSophieInstrument,freeDrumSynthInstrument,1,0}},
   {"Fatty",InstrumentCategory::synth,InstrumentScreenKind::bass808,destBass808,COUNT(destBass808),fxBass808,COUNT(fxBass808),{9,modNameBass808,initBass808Instrument,freeBass808Instrument,1,0}},
+  {"Granular",InstrumentCategory::sample,InstrumentScreenKind::granular,destGranular,COUNT(destGranular),fxGranular,COUNT(fxGranular),{10,modNameGranular,initGranularInstrument,freeSampleInstrument,1,0}},
 };
 #undef COUNT
 
@@ -709,6 +732,7 @@ InstrumentVoicePostSettings* instrumentVoicePostSettings(Instrument* instrument)
     case InstrumentType::GBNoise: return &instrument->chip.simpleChip;
     case InstrumentType::Braids: return &instrument->chip.braids;
     case InstrumentType::Sample: return &instrument->chip.sample;
+    case InstrumentType::Granular: return &instrument->chip.granular.sample;
     case InstrumentType::AudioIn: return &instrument->chip.audioIn;
     case InstrumentType::SCWF: return &instrument->chip.scwf;
     case InstrumentType::BYOWTBL: return &instrument->chip.byowtbl;
@@ -746,6 +770,14 @@ int instrumentMotionDestination(const Instrument* instrument, int destination, F
       *base = destination == 2 ? instrument->chip.audioIn.filterCutoffHz : instrument->chip.audioIn.filterResonance; break;
     case InstrumentType::Sample:
       *base = destination == 3 ? instrument->chip.sample.start : destination == 4 ? instrument->chip.sample.end : destination == 5 ? instrument->chip.sample.speedPercent : destination == 6 ? instrument->chip.sample.loopMode : destination == 7 ? instrument->chip.sample.filterCutoffHz : instrument->chip.sample.filterResonance; break;
+    case InstrumentType::Granular: {
+      const auto& g = instrument->chip.granular;
+      *base = destination == 3 ? g.sample.start : destination == 4 ? g.sizeMs :
+        destination == 5 ? g.scanPercent : destination == 6 ? g.scatter :
+        destination == 7 ? g.pitchSpread : destination == 8 ? g.width :
+        destination == 9 ? g.sample.filterCutoffHz : g.sample.filterResonance;
+      break;
+    }
     case InstrumentType::SCWF:
       *base = destination == 3 ? instrument->chip.scwf.detune : destination == 4 ? instrument->chip.scwf.mix : destination == 5 ? instrument->chip.scwf.filterCutoffHz : instrument->chip.scwf.filterResonance; break;
     case InstrumentType::BYOWTBL:
@@ -802,6 +834,11 @@ int instrumentCCDestinationValue(const Instrument* instrument, int destination, 
   const InstrumentModDestination* d = instrumentModDestination(instrument->type, destination);
   if (instrument->type == InstrumentType::Bass808 && (destination == 3 || destination == 4))
     return ccScale(cc, d->range);
+  if (instrument->type == InstrumentType::Granular) {
+    if (destination == 4) return 1 + ccScale(cc, 1999);
+    if (destination == 5) return ccScale(cc, 800) - 400;
+    if (destination == 7) return ccScale(cc, 2400);
+  }
   if (d->value == InstrumentMotionValue::cutoff) return (int)filterCutoffFromControl((uint8_t)ccScale(cc, 255));
   if (d->range == 16384) return ccScale(cc, 32767);
   if (d->value == InstrumentMotionValue::speed) return ccScale(cc, 500);
@@ -847,6 +884,19 @@ int instrumentSetCCDestination(Instrument* instrument, int destination, uint8_t 
       else if (destination == 8) instrument->chip.sample.filterResonance = value;
       else return 0;
       break;
+    case InstrumentType::Granular: {
+      auto& g = instrument->chip.granular;
+      if (destination == 3) g.sample.start = value;
+      else if (destination == 4) g.sizeMs = 1 + ccScale(cc, 1999);
+      else if (destination == 5) g.scanPercent = ccScale(cc, 800) - 400;
+      else if (destination == 6) g.scatter = value;
+      else if (destination == 7) g.pitchSpread = ccScale(cc, 2400);
+      else if (destination == 8) g.width = value;
+      else if (destination == 9) g.sample.filterCutoffHz = value;
+      else if (destination == 10) g.sample.filterResonance = value;
+      else return 0;
+      break;
+    }
     case InstrumentType::Braids:
       if (destination == 3) instrument->chip.braids.timbre = value;
       else if (destination == 4) instrument->chip.braids.color = value;

@@ -81,6 +81,7 @@ static SelectionItem instrumentTypeSample[] = {
   {NULL, (int)InstrumentType::SCWF, NULL, 0},
   {NULL, (int)InstrumentType::BYOWTBL, NULL, 0},
   {NULL, (int)InstrumentType::SoundFont, NULL, 0},
+  {NULL, (int)InstrumentType::Granular, NULL, 0},
 };
 static SelectionItem instrumentTypeFM[] = {
   {"OPLL / YM2413", (int)InstrumentType::OPLL, NULL, 0},
@@ -99,7 +100,7 @@ static SelectionItem instrumentTypeUtility[] = {
 static const SelectionItem instrumentTypeCategories[] = {
   {"CHIP", -1, instrumentTypeChip, 7},
   {"DRUMS", -1, instrumentTypeDrums, sizeof(instrumentTypeDrums) / sizeof(instrumentTypeDrums[0])},
-  {"SAMPLE", -1, instrumentTypeSample, 4},
+  {"SAMPLE", -1, instrumentTypeSample, 5},
   {"SYNTH", -1, instrumentTypeSynth, sizeof(instrumentTypeSynth) / sizeof(instrumentTypeSynth[0])},
   {"UTILITY", -1, instrumentTypeUtility, 3},
   {"FM", -1, instrumentTypeFM, sizeof(instrumentTypeFM) / sizeof(instrumentTypeFM[0])},
@@ -587,7 +588,7 @@ static ScreenData* instrumentScreen(void) {
     &screenInstrumentDrumSynth, &screenInstrumentMME,
     &screenInstrumentSintered,
     &screenInstrumentMidi, &screenInstrumentOPLL, &screenInstrumentOPL, &screenInstrumentSimpleChip, &screenInstrumentOPL, &screenInstrumentSoundFont, &screenInstrumentMonk, &screenInstrumentAudioIn, &screenInstrumentLayer,
-    &screenInstrumentBass808,
+    &screenInstrumentBass808, &screenInstrumentGranular,
   };
   InstrumentScreenKind kind = getInstrumentDefinition(chipnomadState->project.instruments[cInstrument].type)->screen;
   ScreenData* data = screens[(int)kind];
@@ -602,7 +603,7 @@ static void init(void) {
   screenInstrumentNone.cursorRow = 0;
   screenInstrumentNone.cursorCol = 0;
   SelectionItem* groups[] = {instrumentTypeChip, instrumentTypeSample, instrumentTypeSynth, instrumentTypeDrums, instrumentTypeUtility};
-  const int counts[] = {7, 4, sizeof(instrumentTypeSynth) / sizeof(instrumentTypeSynth[0]), sizeof(instrumentTypeDrums) / sizeof(instrumentTypeDrums[0]), 3};
+  const int counts[] = {7, 5, sizeof(instrumentTypeSynth) / sizeof(instrumentTypeSynth[0]), sizeof(instrumentTypeDrums) / sizeof(instrumentTypeDrums[0]), 3};
   for (int group = 0; group < 5; ++group)
     for (int item = 0; item < counts[group]; ++item)
       groups[group][item].label = getInstrumentDefinition((InstrumentType)groups[group][item].value)->uiName;

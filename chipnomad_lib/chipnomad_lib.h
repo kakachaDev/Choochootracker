@@ -11,6 +11,7 @@
 
 class BraidsVoice;
 class SampleVoice;
+class GranularVoice;
 class SoundbankVoice;
 class SCWFVoice;
 class PlaitsVoice;
@@ -157,6 +158,8 @@ struct ChipNomadState {
   SoundbankVoice* soundbankVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
   AudioInputVoice* audioInputVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
   SampleVoice* sampleVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
+  GranularVoice* granularVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
+  int granularAllocationFailed;
   SCWFVoice* scwfVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
   PlaitsVoice* plaitsVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
   PlaitsAltVoice* plaitsAltVoices[VOICE_OWNER_COUNT][CHORD_MAX_VOICES];
@@ -231,6 +234,7 @@ void chipnomadInstallInstrumentVoices(ChipNomadState* state, PreparedInstrumentV
 
 // Reserve render buffers before starting the audio device. Rendering never
 // grows these buffers, so this must be called again after reconfiguration.
+int chipnomadReserveGranularGrains(ChipNomadState* state, size_t count);
 int chipnomadReserveRenderBuffers(ChipNomadState* state, int frames);
 // Configure persistent workers for real-time rendering while audio is stopped.
 // Returns the number of workers actually enabled; 0 is the serial fallback.

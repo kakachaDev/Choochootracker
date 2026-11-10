@@ -23,6 +23,7 @@
 #include "monk_patch.h"
 #include "synth/sintered_voice.h"
 #include "synth/bass808_voice.h"
+#include "synth/granular_voice.h"
 #include "synth/opll_voice.h"
 #include "synth/sid_voice.h"
 #include "synth/dx7_voice.h"
@@ -61,6 +62,7 @@ static constexpr bool kOptimizeEffectBuses = true;
 static void detectAYPitchConflicts(ChipNomadState* state);
 static void updateBraidsVoices(ChipNomadState* state);
 static void updateSampleVoices(ChipNomadState* state);
+static void updateGranularVoices(ChipNomadState* state);
 static void updateAudioInputVoices(ChipNomadState* state);
 static void updateSoundbankVoices(ChipNomadState* state);
 static void updateSCWFVoices(ChipNomadState* state);
@@ -918,6 +920,7 @@ static void retireLayerTracks(ChipNomadState* state) {
     for (int lane = 0; lane < INSTRUMENT_LAYER_COUNT && !active; ++lane) {
       const int owner = PROJECT_MAX_TRACKS + track * INSTRUMENT_LAYER_COUNT + lane;
       active = ownerVoicesActive(state->sampleVoices, owner) ||
+        ownerVoicesActive(state->granularVoices, owner) ||
         ownerVoicesActive(state->soundbankVoices, owner) ||
         ownerVoicesActive(state->braidsVoices, owner) ||
         ownerVoicesActive(state->audioInputVoices, owner) ||
@@ -1366,6 +1369,7 @@ void chipnomadDestroy(ChipNomadState* state) {
       delete state->braidsVoices[i][voice];
       delete state->soundbankVoices[i][voice];
       delete state->sampleVoices[i][voice];
+      delete state->granularVoices[i][voice];
       delete state->audioInputVoices[i][voice];
       delete state->scwfVoices[i][voice];
       delete state->plaitsVoices[i][voice];
@@ -1694,6 +1698,12 @@ void chipnomadInitChips(ChipNomadState* state, int sampleRate, ChipFactory facto
     state->braidsDrift, state->braidsSignature, state->braidsSignatureSeed);
   syncVoicePool(state->soundbankVoices, has(InstrumentType::SoundFont), inLayer(InstrumentType::SoundFont), rate, voiceTracks);
   syncVoicePool(state->sampleVoices, has(InstrumentType::Sample), inLayer(InstrumentType::Sample), rate, voiceTracks);
+  syncVoicePool(state->granularVoices, has(InstrumentType::Granular), inLayer(InstrumentType::Granular), rate, voiceTracks);
+  size_t grainCapacity = 0;
+  for (const auto& instrument : state->project.instruments)
+    if (instrument.type == InstrumentType::Granular)
+      grainCapacity = std::max<size_t>(grainCapacity, instrument.chip.granular.grains);
+  chipnomadReserveGranularGrains(state, grainCapacity);
   syncVoicePool(state->audioInputVoices, has(InstrumentType::AudioIn), inLayer(InstrumentType::AudioIn), rate, voiceTracks);
   syncVoicePool(state->scwfVoices, has(InstrumentType::SCWF) || has(InstrumentType::BYOWTBL), inLayer(InstrumentType::SCWF) || inLayer(InstrumentType::BYOWTBL), rate, voiceTracks);
   syncVoicePool(state->plaitsVoices, has(InstrumentType::Plaits), inLayer(InstrumentType::Plaits), rate, voiceTracks);
@@ -1797,6 +1807,18 @@ static int audioRateModulationFrames(const ChipNomadState* state) {
     }
   }
   return active ? frames : 0;
+}
+
+int chipnomadReserveGranularGrains(ChipNomadState* state, size_t count) {
+  if (!state) return 1;
+  for (auto& owner : state->granularVoices)
+    for (auto* voice : owner)
+      if (voice && !voice->reserve(count)) {
+        state->granularAllocationFailed = 1;
+        return 1;
+      }
+  state->granularAllocationFailed = 0;
+  return 0;
 }
 
 int chipnomadReserveRenderBuffers(ChipNomadState* state, int frames) {
@@ -1997,6 +2019,7 @@ static void updateAudioRateModulations(ChipNomadState* state, int frames) {
   const auto needs = [&](InstrumentType type) { return allVoices || types[(int)type]; };
   if (needs(InstrumentType::SoundFont)) updateSoundbankVoices(state);
   if (needs(InstrumentType::Sample)) updateSampleVoices(state);
+  if (needs(InstrumentType::Granular)) updateGranularVoices(state);
   if (needs(InstrumentType::AudioIn)) updateAudioInputVoices(state);
   if (needs(InstrumentType::SCWF) || needs(InstrumentType::BYOWTBL)) updateSCWFVoices(state);
   if (needs(InstrumentType::Braids)) updateBraidsVoices(state);
@@ -2102,7 +2125,7 @@ static int advancePlaybackFrame(ChipNomadState* state, uint64_t dueMicros) {
   for (int t = 0; t < state->audioProject.tracksCount; ++t)
     state->playbackState.tracks[t].liveInstrument = EMPTY_VALUE_8;
   updateSoundbankVoices(state);
-  updateSampleVoices(state); updateAudioInputVoices(state); updateSCWFVoices(state); updateBraidsVoices(state);
+  updateSampleVoices(state); updateGranularVoices(state); updateAudioInputVoices(state); updateSCWFVoices(state); updateBraidsVoices(state);
   updatePlaitsVoices(state); updatePlaitsAltVoices(state); updateAChChidVoices(state); updateDrumSynthVoices(state);
   updateMMEVoices(state); updateMonkVoices(state); updateSinteredVoices(state); updateBass808Voices(state); updateOPLLVoices(state); updateOPLVoices(state); updateFourOpVoices(state); updateSimpleChipVoices(state); updateSIDVoices(state); updateDX7Voices(state); applyVoiceEvents(state, dueMicros);
   retireLayerTracks(state);
@@ -2462,6 +2485,9 @@ int chipnomadRender(ChipNomadState* state, float* buffer, int samples, const flo
       for (int t = 0; t < PROJECT_MAX_TRACKS; ++t)
         for (int v = 0; v < CHORD_MAX_VOICES; ++v)
           if (state->sampleVoices[t][v]) state->sampleVoices[t][v]->stopImmediately();
+      for (int t = 0; t < PROJECT_MAX_TRACKS; ++t)
+        for (int v = 0; v < CHORD_MAX_VOICES; ++v)
+          if (state->granularVoices[t][v]) state->granularVoices[t][v]->stopImmediately();
       auto& transition = state->stopTransition;
       if (!transition.pending && !transition.remaining &&
           (transition.last[0] != 0 || transition.last[1] != 0) &&
@@ -2503,6 +2529,7 @@ int chipnomadRender(ChipNomadState* state, float* buffer, int samples, const flo
     renderStereoVoiceTracks(state, state->soundbankVoices, output, frames, true);
     // Sample voices keep the same short de-click tail after KILL/retrigger.
     renderStereoVoiceTracks(state, state->sampleVoices, output, frames, true);
+    renderStereoVoiceTracks(state, state->granularVoices, output, frames, true);
     for (int t = 0; t < voiceOwnerLimit(state); ++t) {
       if (!voiceOwnerValid(state, t)) continue;
       int instrumentIdx = voiceOwnerState(state, t)->note.instrument;
@@ -2676,6 +2703,9 @@ static void applyVoiceEvents(ChipNomadState* state, uint64_t dueMicros) {
         break;
       case InstrumentType::Sample:
         applyEvent(state->sampleVoices[trackIdx]);
+        break;
+      case InstrumentType::Granular:
+        applyEvent(state->granularVoices[trackIdx]);
         break;
       case InstrumentType::SCWF:
       case InstrumentType::BYOWTBL:
@@ -2900,6 +2930,85 @@ static void updateAudioInputVoices(ChipNomadState* state) {
     p.filterResonance = clampInt(resonance, 0, 255);
     for (int v = 0; v < track->chordVoiceCount; ++v)
       voices[v]->configure(p, gain / track->chordVoiceCount);
+  }
+}
+
+static void updateGranularVoices(ChipNomadState* state) {
+  auto* project = &state->audioProject;
+  for (int owner = 0; owner < voiceOwnerLimit(state); ++owner) {
+    if (!voiceOwnerValid(state, owner)) continue;
+    auto* track = voiceOwnerState(state, owner);
+    auto** voices = state->granularVoices[owner];
+    if (!voices[0]) continue;
+    if (track->note.instrument >= PROJECT_MAX_INSTRUMENTS ||
+        project->instruments[track->note.instrument].type != InstrumentType::Granular) {
+      for (auto* voice : state->granularVoices[owner]) if (voice) voice->kill();
+      continue;
+    }
+    const auto* instrument = &project->instruments[track->note.instrument];
+    auto p = instrument->chip.granular;
+    float gain = phraseGain(&state->playbackState, track, instrument);
+    int position = p.sample.start, size = p.sizeMs, scan = p.scanPercent;
+    int scatter = p.scatter, spread = p.pitchSpread, width = p.width;
+    int cutoff = p.sample.filterCutoffHz, resonance = p.sample.filterResonance;
+    int pitch = p.sample.pitch * 100 + track->note.fineOffset;
+    if (track->note.fx[fxSPT].isOn) pitch = (int8_t)track->note.fx[fxSPT].fxValue * 100 + track->note.fineOffset;
+    if (track->note.fx[fxSST].isOn) position = track->note.fx[fxSST].fxValue;
+    if (track->note.fx[fxSEN].isOn) size = 1 + track->note.fx[fxSEN].fxValue * 1999 / 255;
+    if (track->note.fx[fxSSP].isOn) scan = ((int)track->note.fx[fxSSP].fxValue - 128) * 400 / 128;
+    if (track->note.fx[fxSCF].isOn) cutoff = instrumentFXCutoff(track->note.fx[fxSCF].fxValue);
+    if (track->note.fx[fxSRS].isOn) resonance = track->note.fx[fxSRS].fxValue;
+    if (track->note.fx[fxSVL].isOn) gain = track->note.fx[fxSVL].fxValue * track->note.volume / (255.0f * PHRASE_VOLUME_MAX);
+    for (auto& mod : track->note.modulation) {
+      if (!mod.modulation) continue;
+      switch (mod.modulation->destination) {
+        case 1: {
+          float value = playbackModScaleToRange(mod.outValue, 255) / 255.0f;
+          gain = modulationIsAdditive(mod.modulation->type) ? gain + value : gain * value;
+          break;
+        }
+        case 2: pitch += playbackModScaleToRange(mod.outValue, 1200); break;
+        case 3: position += playbackModScaleToRange(mod.outValue, 255); break;
+        case 4: size += playbackModScaleToRange(mod.outValue, 2000); break;
+        case 5: scan += playbackModScaleToRange(mod.outValue, 400); break;
+        case 6: scatter += playbackModScaleToRange(mod.outValue, 255); break;
+        case 7: spread += playbackModScaleToRange(mod.outValue, 2400); break;
+        case 8: width += playbackModScaleToRange(mod.outValue, 255); break;
+        case 9: cutoff = playbackModulateCutoff(cutoff, &mod); break;
+        case 10: resonance += playbackModScaleToRange(mod.outValue, 255); break;
+      }
+    }
+    p.sample.start = clampInt(position, 0, 255);
+    p.sizeMs = clampInt(size, 1, 2000);
+    p.scanPercent = clampInt(scan, -400, 400);
+    p.scatter = clampInt(scatter, 0, 255);
+    p.pitchSpread = clampInt(spread, 0, 2400);
+    p.width = clampInt(width, 0, 255);
+    p.sample.filterCutoffHz = clampInt(cutoff, FILTER_CUTOFF_MIN_HZ, FILTER_CUTOFF_MAX_HZ);
+    p.sample.filterResonance = clampInt(resonance, 0, 255);
+    int attack = p.sample.attack, decay = p.sample.decay, sustain = p.sample.sustain;
+    int release = p.sample.release, shape = p.sample.envelopeShape, unused = 0, unusedColor = 0;
+    if (track->note.fx[fxEAT].isOn) attack = track->note.fx[fxEAT].fxValue;
+    if (track->note.fx[fxEDC].isOn) decay = track->note.fx[fxEDC].fxValue;
+    if (track->note.fx[fxESU].isOn) sustain = track->note.fx[fxESU].fxValue;
+    if (track->note.fx[fxERL].isOn) release = track->note.fx[fxERL].fxValue;
+    if (track->note.fx[fxESH].isOn) shape = track->note.fx[fxESH].fxValue;
+    applyVoicePostModulations(track, InstrumentType::Granular, &attack, &decay, &sustain,
+      &release, &shape, &unused, &unusedColor);
+    p.sample.attack = attack; p.sample.decay = decay; p.sample.sustain = sustain;
+    p.sample.release = release; p.sample.envelopeShape = shape;
+    recordLiveControls(track, {p.sample.start, p.sizeMs * 255 / 2000,
+      (p.scanPercent + 400) * 255 / 800, p.scatter, p.pitchSpread * 255 / 2400, p.width},
+      filterControlFromCutoff((float)cutoff), resonance);
+    int root = project->pitchTable.octaveSize * 4;
+    if (root >= project->pitchTable.length) root = 0;
+    const int rootCents = project->linearPitch ? project->pitchTable.values[root] : root * 100;
+    for (int v = 0; v < track->chordVoiceCount; ++v) {
+      int note = track->chordPitchFinal[v];
+      int cents = note == EMPTY_VALUE_8 ? rootCents :
+        (project->linearPitch ? project->pitchTable.values[note] : note * 100);
+      voices[v]->configure(p, cents - rootCents + pitch, gain / track->chordVoiceCount);
+    }
   }
 }
 

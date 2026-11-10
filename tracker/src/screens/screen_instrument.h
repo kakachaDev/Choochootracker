@@ -49,6 +49,7 @@ extern ScreenData screenInstrumentAY2;
 extern ScreenData screenInstrumentAYSample;
 extern ScreenData screenInstrumentBraids;
 extern ScreenData screenInstrumentSample;
+extern ScreenData screenInstrumentGranular;
 extern ScreenData screenInstrumentSoundFont;
 extern ScreenData screenInstrumentSCWF;
 extern ScreenData screenInstrumentBYOWTBL;

@@ -1058,6 +1058,23 @@ MME uses the shared LP/BP/HP multimode filter and ADSR. All six macros, Cutoff a
 
 The modulation **Dest** fields and destination popup use the current model's parameter names for both MME and Sintered. **INSERT FX** popup entries show the `F11`-`F28` code followed by the parameter description; the footer identifies the insert module and its full parameter name.
 
+### Granular (experimental)
+
+Choose **Sample > Granular** on the instrument Type field. Select **Source** and press **EDIT** to load a WAV, then play notes in a phrase. C-4 plays grains at the source pitch in a standard 12-tone project; the Pitch control transposes it further.
+
+- **Pos** selects the starting position in the source (00-FF).
+- **Size** sets grain length in milliseconds (1-2000).
+- **Grains** sets the number of simultaneous grains per note voice, starting at 16. It is a decimal count, not a density percentage. The experimental range is 1-65535, without a device-specific CPU cap; available memory can prevent an increase. Chords and multiple tracks multiply the work.
+- **Scan** moves the grain source position at -400% to +400% of normal source playback speed. Zero freezes the position; negative values scan backwards. Individual grains play forwards, and reads wrap around the source.
+- **Scatter** spreads grain start positions around the scanning position.
+- **PitRnd** spreads individual grain pitches by up to the displayed number of cents in either direction.
+- **Width** spreads grain stereo balance. Zero keeps the source's stereo balance; a mono source stays centred.
+- **Cutoff**, **Reso** and **ADSR** process the mixed cloud, not each grain separately.
+
+Grains have smooth Hann windows, overlapping phases and interpolated sample reads. Increasing their count is gain-normalized, but can still overload the CPU. Grain-pool growth is prepared while output is paused, not inside the audio callback; very large changes may interrupt playback briefly. Use **Audio > Performance** to compare counts on your own device. No comfortable Miyoo limit is claimed yet.
+
+Modulation destinations include Position, Size, Scan, Scatter, PitRnd, Width, cutoff, resonance, volume and pitch. Lane FX reuse **SST** for position, **SEN** for size (01-FF spans approximately 9-2000 ms; 00 is 1 ms), **SSP** for scan (80 is stationary, 00 scans backwards at 400%, FF forwards at about 397%), **SPT** for pitch, **SVL** for level and **SCF/SRS** for the filter. The granular instrument is separate from Sampler: its looping grain cloud does not change existing sampler stretch or slice behavior. Source audio and settings are included when saving the project.
+
 ### Audio in
 
 Choose **Utility > Audio in** to process a live stereo input on a track. On **SOURCE**, choose **External** or one of the eight internal tracks. An internal source taps that track after its inserts and reroutes it to Audio in, so the source is no longer sent directly to the mixer. The resulting sound follows Audio in's notes, filter and envelope, then the destination track's inserts and mixer settings. Select **Device > [Open]** to enable hardware input, open its settings and arm an external source; **Back** returns to the instrument. You can also reach these settings through **Settings > Audio > Input devices**. Then enter notes in a phrase using this instrument. Any note opens the ADSR; note-off starts its release. The note pitch does not transpose the incoming audio. Without a note, the input stays silent on this track.

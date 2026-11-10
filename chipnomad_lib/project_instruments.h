@@ -44,6 +44,7 @@ enum class InstrumentType : uint8_t {
   Layer = 31,
   DigiSophie = 32,
   Bass808 = 33,           // Modern 808 sustained bass synth (NOT a TR-808 kick recreation)
+  Granular = 34,
   totalCount,
 };
 
@@ -444,6 +445,16 @@ struct InstrumentSample : InstrumentVoicePostSettings {
   uint32_t sliceBounds[PROJECT_SAMPLE_MAX_SLICES];
 };
 
+struct InstrumentGranular {
+  InstrumentSample sample;
+  uint16_t grains;
+  uint16_t sizeMs;
+  int16_t scanPercent;
+  uint8_t scatter;
+  uint16_t pitchSpread;
+  uint8_t width;
+};
+
 // Playback window mapping: Start/End are stored as 0-255 normalized values;
 // these convert them to absolute frame positions. Shared by the sample
 // voice, the stretch processor and the sample editor screen - do not fork
@@ -616,6 +627,7 @@ union InstrumentChipData {
   InstrumentAYSample aySample;
   InstrumentBraids braids;
   InstrumentSample sample;
+  InstrumentGranular granular;
   InstrumentSCWF scwf;
   InstrumentBYOWTBL byowtbl;
   InstrumentPlaits plaits;
@@ -663,6 +675,16 @@ struct Instrument {
   InstrumentChipData chip;
 };
 
+extern "C++" inline InstrumentSample* instrumentPCMSettings(Instrument* instrument) {
+  if (instrument->type == InstrumentType::Granular) return &instrument->chip.granular.sample;
+  return instrument->type == InstrumentType::Sample ? &instrument->chip.sample : nullptr;
+}
+
+extern "C++" inline const InstrumentSample* instrumentPCMSettings(const Instrument* instrument) {
+  if (instrument->type == InstrumentType::Granular) return &instrument->chip.granular.sample;
+  return instrument->type == InstrumentType::Sample ? &instrument->chip.sample : nullptr;
+}
+
 struct InstrumentFunctions {
   int modDestinationsCount;
   const char* (*modName)(int modIndex);
@@ -675,7 +697,7 @@ struct InstrumentFunctions {
 // This is metadata, not an audio abstraction: renderers keep their typed
 // paths while screens, validation and motion routing share this one catalogue.
 enum class InstrumentCategory : uint8_t { none, chip, sample, synth, drums, utility, fm };
-enum class InstrumentScreenKind : uint8_t { none, ay1, ay2, aySample, braids, sample, scwf, byowtbl, plaits, achchid, drumSynth, mme, sintered, midi, opll, opl, simpleChip, dx7, soundfont, monk, audioIn, layer, bass808 };
+enum class InstrumentScreenKind : uint8_t { none, ay1, ay2, aySample, braids, sample, scwf, byowtbl, plaits, achchid, drumSynth, mme, sintered, midi, opll, opl, simpleChip, dx7, soundfont, monk, audioIn, layer, bass808, granular };
 enum class InstrumentMotionValue : uint8_t { raw, speed, cutoff };
 
 static constexpr FXId instrumentNoFX = FX_ID_EMPTY;

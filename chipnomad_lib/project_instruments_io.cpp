@@ -289,7 +289,7 @@ static int loadInstrumentSoundFont(FILE* file, Instrument* instrument) {
 }
 
 static int loadInstrumentSample(FILE* file, Instrument* instrument) {
-  InstrumentSample* sample = &instrument->chip.sample;
+  InstrumentSample* sample = instrumentPCMSettings(instrument);
   while (1) {
     char* line = peekLine(file);
     if (line == NULL || line[0] == '#') break;
@@ -318,6 +318,12 @@ static int loadInstrumentSample(FILE* file, Instrument* instrument) {
     }
     else if (strncmp(line, "- Sample stretch: ", 18) == 0) sscanf(line, "- Sample stretch: %hhu", &sample->stretchMode);
     else if (strncmp(line, "- Speed algo: ", 14) == 0) sscanf(line, "- Speed algo: %hhu", &sample->speedAlgorithm);
+    else if (instrument->type == InstrumentType::Granular && strncmp(line, "- Grains: ", 10) == 0) sscanf(line + 10, "%hu", &instrument->chip.granular.grains);
+    else if (instrument->type == InstrumentType::Granular && strncmp(line, "- Grain size: ", 14) == 0) sscanf(line + 14, "%hu", &instrument->chip.granular.sizeMs);
+    else if (instrument->type == InstrumentType::Granular && strncmp(line, "- Grain scan: ", 14) == 0) sscanf(line + 14, "%hd", &instrument->chip.granular.scanPercent);
+    else if (instrument->type == InstrumentType::Granular && strncmp(line, "- Grain scatter: ", 17) == 0) sscanf(line + 17, "%hhu", &instrument->chip.granular.scatter);
+    else if (instrument->type == InstrumentType::Granular && strncmp(line, "- Grain pitch: ", 15) == 0) sscanf(line + 15, "%hu", &instrument->chip.granular.pitchSpread);
+    else if (instrument->type == InstrumentType::Granular && strncmp(line, "- Grain width: ", 15) == 0) sscanf(line + 15, "%hhu", &instrument->chip.granular.width);
     else if (strncmp(line, "- Sample volume: ", 17) == 0) sscanf(line, "- Sample volume: %hhu", &instrument->volume);
     else loadVoicePostSetting(line, sample);
     consumeLine(file);
@@ -331,6 +337,15 @@ static int loadInstrumentSample(FILE* file, Instrument* instrument) {
   if (sample->autoSensitivity < 1 || sample->autoSensitivity > 99) sample->autoSensitivity = 50;
   if (sample->stretchMode > 6) sample->stretchMode = 0;
   if (sample->speedAlgorithm > 1) sample->speedAlgorithm = 0;
+  if (instrument->type == InstrumentType::Granular) {
+    auto& g = instrument->chip.granular;
+    if (!g.grains) g.grains = 1;
+    if (!g.sizeMs) g.sizeMs = 1;
+    if (g.sizeMs > 2000) g.sizeMs = 2000;
+    if (g.pitchSpread > 2400) g.pitchSpread = 2400;
+    if (g.scanPercent < -400) g.scanPercent = -400;
+    if (g.scanPercent > 400) g.scanPercent = 400;
+  }
   return 0;
 }
 
@@ -770,6 +785,7 @@ int instrumentLoadData(FILE* file, Instrument* instrument, Project* p) {
         if(loadInstrumentSoundFont(file,instrument)) return 1;
         break;
       case InstrumentType::Sample:
+      case InstrumentType::Granular:
         if (loadInstrumentSample(file, instrument)) return 1;
         break;
       case InstrumentType::SCWF:
@@ -962,7 +978,7 @@ static int saveInstrumentBraids(FILE* file, Instrument* instrument) {
 }
 
 static int saveInstrumentSample(FILE* file, Instrument* instrument) {
-  InstrumentSample* sample = &instrument->chip.sample;
+  InstrumentSample* sample = instrumentPCMSettings(instrument);
   fprintf(file, "- Sample path: %s\n", sample->path);
   fprintf(file, "- Sample pitch: %hhd\n", sample->pitch);
   fprintf(file, "- Sample speed: %hu\n", sample->speedPercent);
@@ -997,6 +1013,11 @@ static int saveInstrumentSample(FILE* file, Instrument* instrument) {
   }
   fprintf(file, "- Sample stretch: %hhu\n", sample->stretchMode > 6 ? 0 : sample->stretchMode);
   fprintf(file, "- Speed algo: %hhu\n", sample->speedAlgorithm > 1 ? 0 : sample->speedAlgorithm);
+  if (instrument->type == InstrumentType::Granular) {
+    const auto& g = instrument->chip.granular;
+    fprintf(file, "- Grains: %hu\n- Grain size: %hu\n- Grain scan: %hd\n- Grain scatter: %hhu\n- Grain pitch: %hu\n- Grain width: %hhu\n",
+      g.grains, g.sizeMs, g.scanPercent, g.scatter, g.pitchSpread, g.width);
+  }
   saveVoicePostSettings(file, sample);
   return 0;
 }
@@ -1200,6 +1221,7 @@ int instrumentSaveData(FILE* file, int idx, Instrument* instrument) {
       }
       break;
     case InstrumentType::Sample:
+    case InstrumentType::Granular:
       saveInstrumentSample(file, instrument);
       break;
     case InstrumentType::SCWF:

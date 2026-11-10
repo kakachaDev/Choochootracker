@@ -1510,7 +1510,7 @@ static bool cctHasSamples(const Project* project) {
   for (int i = 0; i < PROJECT_MAX_INSTRUMENTS; ++i) {
     const Instrument* instrument = &project->instruments[i];
     const InstrumentSample* samples[2] = {NULL, NULL}; int count = 0;
-    if (instrument->type == InstrumentType::Sample) samples[count++] = &instrument->chip.sample;
+    if (instrumentPCMSettings(instrument)) samples[count++] = instrumentPCMSettings(instrument);
     else if (instrument->type == InstrumentType::SCWF || instrument->type == InstrumentType::BYOWTBL) {
       samples[count++] = &instrument->chip.scwf.oscillator[0]; samples[count++] = &instrument->chip.scwf.oscillator[1];
     }
@@ -1530,8 +1530,8 @@ static void projectLoadRelativeSamples(Project* project, const char* projectPath
     Instrument* instrument = &project->instruments[i];
     InstrumentSample* samples[2] = {NULL, NULL};
     int count = 0;
-    if (instrument->type == InstrumentType::Sample) {
-      samples[count++] = &instrument->chip.sample;
+    if (instrumentPCMSettings(instrument)) {
+      samples[count++] = instrumentPCMSettings(instrument);
     } else if (instrument->type == InstrumentType::SCWF) {
       samples[count++] = &instrument->chip.scwf.oscillator[0];
       samples[count++] = &instrument->chip.scwf.oscillator[1];
@@ -1589,7 +1589,7 @@ int projectLoad(Project* p, const char* path) {
     for (int i = 0; i < PROJECT_MAX_INSTRUMENTS; ++i) {
       Instrument* instrument = &p->instruments[i];
       InstrumentSample* samples[2] = {NULL, NULL}; int count = 0;
-      if (instrument->type == InstrumentType::Sample) samples[count++] = &instrument->chip.sample;
+      if (instrumentPCMSettings(instrument)) samples[count++] = instrumentPCMSettings(instrument);
       else if (instrument->type == InstrumentType::SCWF || instrument->type == InstrumentType::BYOWTBL) {
         samples[count++] = &instrument->chip.scwf.oscillator[0]; samples[count++] = &instrument->chip.scwf.oscillator[1];
       }
@@ -2029,8 +2029,8 @@ static int projectSaveDirect(Project* p, const char* path) {
       Instrument* instrument = &p->instruments[i];
       InstrumentSample* samples[2] = {NULL, NULL};
       int count = 0;
-      if (instrument->type == InstrumentType::Sample) {
-        samples[count++] = &instrument->chip.sample;
+      if (instrumentPCMSettings(instrument)) {
+        samples[count++] = instrumentPCMSettings(instrument);
       } else if (instrument->type == InstrumentType::SCWF || instrument->type == InstrumentType::BYOWTBL) {
         samples[count++] = &instrument->chip.scwf.oscillator[0];
         samples[count++] = &instrument->chip.scwf.oscillator[1];

@@ -273,8 +273,8 @@ void exportRefreshSamplePaths(struct Project* project, const char* baseDir,
     Instrument* instrument = &project->instruments[i];
     InstrumentSample* samples[2] = {NULL, NULL};
     int count = 0;
-    if (instrument->type == InstrumentType::Sample) {
-      samples[count++] = &instrument->chip.sample;
+    if (instrumentPCMSettings(instrument)) {
+      samples[count++] = instrumentPCMSettings(instrument);
     } else if (instrument->type == InstrumentType::SCWF) {
       samples[count++] = &instrument->chip.scwf.oscillator[0];
       samples[count++] = &instrument->chip.scwf.oscillator[1];

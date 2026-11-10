@@ -84,6 +84,8 @@ const char* instrumentTypeName(InstrumentType type) {
     case InstrumentType::SoundFont: return "SOUNDFONT";
     case InstrumentType::Sample:
       return "Sampler";
+    case InstrumentType::Granular:
+      return "Granular";
     case InstrumentType::SCWF:
       return "2xSCWF";
     case InstrumentType::BYOWTBL:
