@@ -93,6 +93,7 @@ int mainLoopGetTargetFps(void) { return 60; }
 int mainLoopGetFrameTimeUs(void) { return 0; }
 void screenDraw(void) {}
 void screenApplyPending(void) {}
+void fileBrowserStopHeldPreview(void) {}
 bool fileBrowserHasMidiPreview(void) { return false; }
 void fileBrowserMidiInput(const MidiPreviewIntent&) {}
 static char activeMessage[42]{};
