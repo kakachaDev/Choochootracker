@@ -1270,8 +1270,7 @@ This clean Sample engine plays mono or stereo PCM samples loaded into RAM.
 - Processing edits start in RAM. Project saves and autosaves embed the current sample audio in the `.cct`; **Save**/**Save As** in Sample Edit writes the separate WAV. The `*` marker means the sample in RAM differs from that WAV. Loading another sample replaces the current audio in RAM and resets the Region to the full sample (Start `00`, End `FF`).
 - **Region** sets the playback Start/End markers, also available on the Sampler instrument screen. They set normalised playback boundaries (`00-FF`); if Start is after End, the sample plays in reverse. **EDIT + [LEFT/RIGHT]** fine-adjusts the marker in steps of one (`01`) and zooms the waveform around it while **EDIT** is held; **EDIT + [UP/DOWN]** coarse-adjusts (step 16) and returns the view to the full sample. **EDIT + OPT** resets the marker to its default (Start `00`, End `FF`).
 - The waveform view zooms to a fixed window of 5/7 of a second of audio (40% more magnification than a full second) around the edited marker and pans to keep it visible; samples that fit inside the window stay at the full 1:1 view. The zoom is transient: it lasts while **EDIT** is held, and releasing **EDIT** returns to the full 1:1 view, as do coarse steps. Entering the screen always resets the view to the full sample.
-- **Loop** is a row with two cells: **START** (loop start) and **SPD ALGO**
- (speed algorithm). It sits between **Select** and **Slice** on screen.
+- The **Loop** row contains the **START** marker. Choose the stretch algorithm on the Sampler instrument screen.
 - **START** shows the loop wrap point in hex and is always adjustable; when
  looping is off, the marker is ignored in playback. The red waveform marker
  appears only while looping is active and the value is nonzero. **EDIT +
@@ -1284,9 +1283,6 @@ This clean Sample engine plays mono or stereo PCM samples loaded into RAM.
  markers moves the wrap point back to the Region Start whenever it would fall
  outside the new Region. Projects saved before this feature load with the
  wrap point at the Region Start (no audible change).
-- **SPD ALGO** picks the time-stretch algorithm used when **Speed** differs
- from `100%`: `Granular` (default) or `Stretch`. The box shows `-` when the
- mode is OFF.
 - **Select** sets a processing selection in absolute frames, independent of the playback Start/End markers. **EDIT + [LEFT/RIGHT]** moves a handle fourteen frames and zooms onto it while **EDIT** is held; **EDIT + [UP/DOWN]** jumps by `frameCount/64` (minimum 16) and returns to the full-sample view. **EDIT (tap)** on a handle copies the current Start or End marker position to it. **EDIT + OPT** on either handle empties the whole selection. When the selection is empty both handles show `-`; when the handles are inverted they swap automatically. The selection is session-only editor state: it is not saved with the project, and entering the screen seeds it with the playback Region span (the whole sample with the default markers).
 - **Slice** is a single row with four value cells - **Mode**, **Count**,
   **Slice** and **Frame** - and is saved with the instrument. Off plays the
@@ -1394,9 +1390,17 @@ This clean Sample engine plays mono or stereo PCM samples loaded into RAM.
   - **Save As** writes the current sample to a new file: enter a file name (pre-filled with the current name without extension), then pick a folder in the browser. The sample is written as `<folder>/<name>.wav`, the instrument points at the new file, and the folder is remembered as the default sample folder. It is dimmed (and skipped in navigation) until sample data is loaded, so a freshly loaded sample can be given a file path. Paths longer than 255 characters are rejected.
   - The `*` marker before the filename means the sample in RAM differs from the file on disk (any process operation sets it, Save and Save As clear it). The marker is session-only: it is not saved with the project and resets when the screen is re-entered. If several instruments reference the same WAV file, saving one overwrites the file for all of them.
 - On the Sample instrument screen, use **EDIT + [LEFT/RIGHT]** to load the previous or next WAV in the same folder.
-- **Pitch** transposes by semitones (`-48` to `+48`).
-- **Loop** selects Off, Loop, Ping-Pong, Loop X-Fade or Ping-Pong X-Fade. The X-Fade modes crossfade the loop wrap over the last 25% of the loop window instead of hard-cutting it.
-- **Speed** controls time-stretching from `0%` to `500%` (`100%` is normal); the algorithm (Granular or Stretch) is picked on the Sample Edit screen's **SPD ALGO** cell.
+- **Pitch** has two fields: semitones (`-48` to `+48`) and fine tuning in cents (`-99` to `+99`). Both fields are locked in `Repitch`, which takes pitch from playback speed. Their values are kept when switching modes.
+- **Loop** selects Off, Loop, Ping-Pong, Loop X-Fade or Ping-Pong X-Fade. The X-Fade modes crossfade the loop wrap over the last 25% of the loop window where supported by the algorithm.
+- **Speed** sets the playback rate from `0%` to `500%` when **Stretch** is Off. **Stretch** selects a fixed duration from one beat to eight bars at the project tempo and takes precedence over Speed. Musical Stretch and user slicing are mutually exclusive. At zero Speed the new modes hold the playback cursor and fade to silence.
+- **ALGO** selects how the Sampler changes duration for both Speed and Stretch:
+  - `Granular`: overlap-add with fixed grain spacing. Low CPU cost, with a texture that can soften attacks.
+  - `WSOLA`: aligns overlapping grains by waveform similarity. Try it on voice or mixed loops.
+  - `Beat`: moves detected hits to the new timing and tries to retain their attacks. Slowing down can leave gaps between hits.
+  - `Beat Pro`: uses the same hit timing and stretches eligible tails to reduce gaps. Silence in the source and very short tails can still leave gaps.
+  - `Spectral`: Signalsmith. Try it on sustained or polyphonic material; it has a higher CPU cost.
+  - `Repitch`: changes playback rate directly. At `50%` a note lasts twice as long and sounds one octave lower. The note triggers playback; note pitch and pitch effects do not transpose it.
+  - `Old Grn` and `Old FFT`: preserve the previous Speed behaviors. Both still use Signalsmith for unsliced beat/bar Stretch, as before. Existing instruments keep their legacy choice until you change ALGO.
 
 Unsupported WAV formats display an error. Convert unusual files to `PCM8`, `PCM16` or `PCM24` WAV before importing them.
 
@@ -2318,7 +2322,7 @@ CPU cost depends on the active engines and effects. Plaits physical models and C
 
 For Aggro instruments, set Resonance to zero when you do not need a resonant peak: this reduces processing work while keeping the filter's saturation.
 
-For Sampler instruments, disable the filter when you do not need it. With **SPD ALGO** set to **Granular**, keeping **Speed** at `100%` avoids granular time-stretching when you do not need to change the sample's duration.
+For Sampler instruments, disable the filter when you do not need it. With **ALGO** set to `Granular`, keep **Speed** at `100%`, **Stretch** Off and pitch at the sample's original pitch to bypass grain processing. Try `Repitch` when pitch may follow speed.
 
 The CPU display is a smoothed measure of audio rendering time. It does not measure delays before the audio callback runs or in the device's audio output, so crackles can occur even with a low reading.
 

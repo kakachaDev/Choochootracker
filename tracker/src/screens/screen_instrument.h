@@ -19,6 +19,7 @@ int instrumentLiveValue(int control);
 float instrumentLivePosition(int control);
 // The cell where a page shows a live control, if it has one.
 bool instrumentSampleLiveCell(int control, int* col, int* row);
+int instrumentSamplePitchTouchColumn(int x);
 bool instrumentSCWFLiveCell(int control, int* col, int* row);
 bool instrumentBYOWTBLLiveCell(int control, int* col, int* row);
 bool instrumentBraidsLiveCell(int control, int* col, int* row);

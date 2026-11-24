@@ -417,6 +417,13 @@ struct InstrumentPlaits : InstrumentVoicePostSettings {
 // Maximum number of slices per sample (all slice modes, plan decision D7).
 #define PROJECT_SAMPLE_MAX_SLICES 64
 
+// Stable IDs in project and instrument files. Zero keeps pre-ALGO routing.
+enum class SampleAlgorithm : uint8_t { Legacy, Granular, Wsola, Beat, BeatPro, Spectral, Repitch };
+
+static inline SampleAlgorithm sampleNormalizeAlgorithm(uint8_t id) {
+  return id <= (uint8_t)SampleAlgorithm::Repitch ? (SampleAlgorithm)id : SampleAlgorithm::Legacy;
+}
+
 struct InstrumentSample : InstrumentVoicePostSettings {
   char path[PROJECT_SAMPLE_PATH_LENGTH + 1];
   uint32_t sampleRate;
@@ -437,11 +444,23 @@ struct InstrumentSample : InstrumentVoicePostSettings {
   // 129..192 LAZY (value - 64/128 is the slice count).
   uint8_t slice;
   uint8_t stretchMode; // 0: off, 1: 1 beat, 2: 2 beats, 3: 1 bar, 4: 2 bars, 5: 4 bars, 6: 8 bars
-  uint8_t speedAlgorithm; // 0: dirty granular playback, 1: clean Signalsmith stretch
+  uint8_t speedAlgorithm; // Legacy Speed: 0 granular, 1 Signalsmith
   uint8_t autoSensitivity; // AUTO transient detection strength, 1..99 (50 = default)
   // Manual slice boundaries in frames (start of each slice; the last slice
   // ends at the loop end marker). Empty (all zero) = even/auto placement.
   uint32_t sliceBounds[PROJECT_SAMPLE_MAX_SLICES];
+};
+
+struct SampleTimeSettings {
+  uint8_t algorithm;
+  int8_t finePitch; // cents, -99..99
+  uint8_t beatOnsetCount;
+  uint32_t beatOnsets[PROJECT_SAMPLE_MAX_SLICES]; // derived from PCM, not serialized
+};
+
+// SCWF and BYOWTBL share PCM storage but do not need stretch analysis.
+struct InstrumentSampler : InstrumentSample {
+  SampleTimeSettings timing;
 };
 
 // Playback window mapping: Start/End are stored as 0-255 normalized values;
@@ -615,7 +634,7 @@ union InstrumentChipData {
   InstrumentAY2 ay2;
   InstrumentAYSample aySample;
   InstrumentBraids braids;
-  InstrumentSample sample;
+  InstrumentSampler sample;
   InstrumentSCWF scwf;
   InstrumentBYOWTBL byowtbl;
   InstrumentPlaits plaits;

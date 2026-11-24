@@ -289,12 +289,20 @@ static int loadInstrumentSoundFont(FILE* file, Instrument* instrument) {
 }
 
 static int loadInstrumentSample(FILE* file, Instrument* instrument) {
-  InstrumentSample* sample = &instrument->chip.sample;
+  InstrumentSampler* sample = &instrument->chip.sample;
   while (1) {
     char* line = peekLine(file);
     if (line == NULL || line[0] == '#') break;
     if (strncmp(line, "- Sample path: ", 15) == 0) sscanf(line, "- Sample path: %255[^\n]", sample->path);
     else if (strncmp(line, "- Sample pitch: ", 16) == 0) sscanf(line, "- Sample pitch: %hhd", &sample->pitch);
+    else if (strncmp(line, "- Sample fine pitch: ", 21) == 0) {
+      long value = strtol(line + 21, nullptr, 10);
+      sample->timing.finePitch = (int8_t)(value < -99 ? -99 : value > 99 ? 99 : value);
+    }
+    else if (strncmp(line, "- Sample algo: ", 15) == 0) {
+      long value = strtol(line + 15, nullptr, 10);
+      sample->timing.algorithm = value >= 0 && value <= (long)SampleAlgorithm::Repitch ? (uint8_t)value : 0;
+    }
     else if (strncmp(line, "- Sample speed: ", 16) == 0) sscanf(line, "- Sample speed: %hu", &sample->speedPercent);
     else if (strncmp(line, "- Sample start: ", 16) == 0) sscanf(line, "- Sample start: %hhu", &sample->start);
     else if (strncmp(line, "- Sample end: ", 14) == 0) sscanf(line, "- Sample end: %hhu", &sample->end);
@@ -324,7 +332,7 @@ static int loadInstrumentSample(FILE* file, Instrument* instrument) {
   }
   if (sample->path[0]) {
     char error[64];
-    sampleLoadWav16(sample->path, sample, error, sizeof(error));
+    if (!sampleLoadWav16(sample->path, sample, error, sizeof(error))) samplePrepareBeatOnsets(sample);
   }
   if (sample->loopMode > 4) sample->loopMode = 0;
   sample->slice = sampleNormalizeSliceEx(sample->slice);
@@ -962,9 +970,12 @@ static int saveInstrumentBraids(FILE* file, Instrument* instrument) {
 }
 
 static int saveInstrumentSample(FILE* file, Instrument* instrument) {
-  InstrumentSample* sample = &instrument->chip.sample;
+  InstrumentSampler* sample = &instrument->chip.sample;
   fprintf(file, "- Sample path: %s\n", sample->path);
   fprintf(file, "- Sample pitch: %hhd\n", sample->pitch);
+  if (sample->timing.finePitch) fprintf(file, "- Sample fine pitch: %hhd\n", sample->timing.finePitch);
+  auto algorithm = sampleNormalizeAlgorithm(sample->timing.algorithm);
+  if (algorithm != SampleAlgorithm::Legacy) fprintf(file, "- Sample algo: %u\n", (unsigned)algorithm);
   fprintf(file, "- Sample speed: %hu\n", sample->speedPercent);
   fprintf(file, "- Sample start: %hhu\n", sample->start);
   fprintf(file, "- Sample end: %hhu\n", sample->end);

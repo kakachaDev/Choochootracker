@@ -2995,8 +2995,8 @@ static void updateSampleVoices(ChipNomadState* state) {
       continue;
     }
 
-    InstrumentSample* sample = &project->instruments[track->note.instrument].chip.sample;
-    int pitchCents = sample->pitch * 100 + track->note.fineOffset;
+    InstrumentSampler* sample = &project->instruments[track->note.instrument].chip.sample;
+    int pitchCents = sample->pitch * 100 + sample->timing.finePitch + track->note.fineOffset;
     int speedPercent = sample->speedPercent;
     int loopMode = sample->loopMode;
     uint8_t start = sample->start;
@@ -3158,7 +3158,7 @@ static void updateSampleVoices(ChipNomadState* state) {
       voices[slot]->configure(sample, (float)voicePitchCents, gain / track->chordVoiceCount, (float)speedPercent, start, end, (uint8_t)loopMode,
                               (uint16_t)cutoff, (uint8_t)resonance, attack, decay, sustain, release, shape,
                               sliceCount, voiceSliceIndex, sample->stretchMode, project->tickRate,
-                              sample->speedAlgorithm, forceReverse, effectiveLoopStart, xfade);
+                              sample->speedAlgorithm, forceReverse, effectiveLoopStart, xfade, &sample->timing);
     }
   }
 }

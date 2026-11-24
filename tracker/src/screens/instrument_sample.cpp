@@ -13,6 +13,24 @@
 static int sampleButtonDown;
 static constexpr int sourceValueX = kColumnValueX[0];
 static constexpr int sourceValueWidth = kFieldNumberWidth;
+static constexpr int finePitchX = sourceValueX + 5;
+static const char* const algorithmLabels[] = {
+  "Old Grn", "Old FFT", "Granular", "WSOLA", "Beat", "Beat Pro", "Spectral", "Repitch"
+};
+
+static uint8_t algorithmCell(const InstrumentSampler* sample) {
+  auto algorithm = sampleNormalizeAlgorithm(sample->timing.algorithm);
+  return algorithm == SampleAlgorithm::Legacy ? (sample->speedAlgorithm == 1 ? 1 : 0)
+                                             : (uint8_t)algorithm + 1;
+}
+
+static bool pitchLocked(const InstrumentSampler* sample) {
+  return sampleNormalizeAlgorithm(sample->timing.algorithm) == SampleAlgorithm::Repitch;
+}
+
+int instrumentSamplePitchTouchColumn(int x) {
+  return x >= kColumnNameX[1] ? 2 : x >= finePitchX ? 1 : 0;
+}
 static constexpr int editLabelX = kColumnNameX[1];
 static constexpr int editLabelWidth = 8;
 static Bitmap* samplePreviewBitmap;
@@ -76,7 +94,9 @@ static void onSampleLoaded(const char* path) {
     // unlooped. Project reload is unaffected - the .cct loop start line is
     // parsed before the WAV load and does not go through this path.
     instrument->chip.sample.loopStart = 0;
-    if (cueCount > 0 && sampleDecodeSliceMode(instrument->chip.sample.slice) == sliceModeOff) {
+    samplePrepareBeatOnsets(&instrument->chip.sample);
+    if (cueCount > 0 && !instrument->chip.sample.stretchMode &&
+        sampleDecodeSliceMode(instrument->chip.sample.slice) == sliceModeOff) {
       // Cues seed an AUTO-mode sample with manual bounds: the sentinel
       // count matches the cue count and playback stays full-sample until
       // the user picks a mode (AUTO/EQUAL act as sliced, LAZY ignores).
@@ -126,7 +146,7 @@ static int getColumnCount(int row) {
     // armed input; the editor handles both loading and recording).
     return 2;
   }
-  return row == 9 ? 5 : 2;
+  return row == 9 ? 5 : row == 4 ? 3 : 2;
 }
 
 static void drawStatic(void) {
@@ -136,7 +156,7 @@ static void drawStatic(void) {
   gfxPrint(0,7,"SOURCE");
   gfxSetFgColor(appSettings.colorScheme.textLabel);
   gfxPrint(0,8,"Pitch"); gfxPrint(0,9,"Stretch");
-  gfxPrint(0,10,"Loop"); gfxPrint(0,11,"Speed");
+  gfxPrint(0,10,"Loop"); gfxPrint(0,11,"Speed"); gfxPrint(0,12,"ALGO");
   instrumentCommonDrawVoicePostStatic(1);
   InstrumentSample* sample = &chipnomadState->project.instruments[cInstrument].chip.sample;
   updateSamplePreview(sample);
@@ -145,7 +165,11 @@ static void drawStatic(void) {
 
 static void drawCursor(int col, int row) {
   if (row < 3) return instrumentCommonDrawCursor(col, row);
-  if (instrumentCommonDrawVoicePostCursor(col, row)) return;
+  if (row == 4 && col < 2) {
+    gfxCursor(col == 0 ? sourceValueX : finePitchX, 8, 4);
+    return;
+  }
+  if (instrumentCommonDrawVoicePostCursor(row == 4 ? col - 1 : col, row)) return;
   else if (row == 3) {
     const int x = col == 0 ? sourceValueX : editLabelX;
     const int w = col == 0 ? sourceValueWidth : editLabelWidth;
@@ -167,21 +191,24 @@ static const char* shortSampleFilename(const char* path, size_t maxLength) {
 
 static void drawField(int col, int row, CellState state) {
   if (row < 3) return instrumentCommonDrawField(col, row, state);
-  InstrumentSample* sample = &chipnomadState->project.instruments[cInstrument].chip.sample;
-  if (instrumentCommonDrawVoicePostField(col, row, state, sample)) return;
+  const auto* sample = &chipnomadState->project.instruments[cInstrument].chip.sample;
+  if ((row != 4 || col == 2) &&
+      instrumentCommonDrawVoicePostField(row == 4 ? col - 1 : col, row, state, sample)) return;
   int stretchOn = sample->stretchMode != 0;
   // The selected field's label lights up with its value; Sample is a title.
-  static const char* const labels[] = {"Pitch", "Stretch", "Loop", "Speed"};
+  static const char* const labels[] = {"Pitch", "Stretch", "Loop", "Speed", "ALGO"};
   if (row == 3 && col == 0) {
     gfxSetFgColor(state == CellState::focus ? appSettings.colorScheme.cursor : appSettings.colorScheme.textTitles);
     gfxPrint(0, 6, "Sample");
-  } else if (!col && row >= 4 && row <= 7) {
+  } else if ((!col || row == 4) && row >= 4 && row <= 8) {
     fieldDrawLabel(0, row + 4, labels[row - 4], state);
   }
   gfxSetFgColor(row == 5 || row == 6 ? fieldNameColor(state) : fieldValueColor(state));
   if (row == 3) {
     if (col == 0) gfxClearRect(sourceValueX, 6, sourceValueWidth, 1);
     else gfxClearRect(editLabelX, 6, editLabelWidth, 1);
+  } else if (row == 4) {
+    gfxClearRect(col == 0 ? sourceValueX : finePitchX, 8, 4, 1);
   } else {
     gfxClearRect(sourceValueX, row + 4, sourceValueWidth, 1);
   }
@@ -197,7 +224,11 @@ static void drawField(int col, int row, CellState state) {
       }
       break;
     }
-    case 4: if(!col) gfxPrintf(sourceValueX,8,"%+d st",sample->pitch); break;
+    case 4:
+      if (pitchLocked(sample)) gfxSetFgColor(appSettings.colorScheme.textEmpty);
+      if (col == 0) gfxPrintf(sourceValueX, 8, "%+ds", sample->pitch);
+      else gfxPrintf(finePitchX, 8, "%+dc", sample->timing.finePitch);
+      break;
     case 5:
       if (!col) gfxPrint(sourceValueX, 9, stretchLabels[sample->stretchMode <= 6 ? sample->stretchMode : 0]);
       break;
@@ -211,6 +242,7 @@ static void drawField(int col, int row, CellState state) {
         else fieldDrawNumber(sourceValueX, 11, speed, state, -1.0f, false, instrumentLivePosition(liveSource1));
       }
       break;
+    case 8: gfxPrint(sourceValueX, 12, algorithmLabels[algorithmCell(sample)]); break;
   }
 }
 
@@ -223,9 +255,9 @@ bool instrumentSampleLiveCell(int control, int* col, int* row) {
 
 static int onEdit(int col, int row, CellEditAction action) {
   if (row < 3) return instrumentCommonOnEdit(col, row, action);
-  InstrumentSample* sample = &chipnomadState->project.instruments[cInstrument].chip.sample;
-  if ((row == 9) || (col && row >= 4 && row <= 8)) {
-    int handled = instrumentCommonOnEditVoicePost(col, row, action, sample);
+  auto* sample = &chipnomadState->project.instruments[cInstrument].chip.sample;
+  if (row == 9 || (row == 4 ? col == 2 : col && row >= 5 && row <= 8)) {
+    int handled = instrumentCommonOnEditVoicePost(row == 4 ? col - 1 : col, row, action, sample);
     if (handled) projectModified = 1;
     return handled;
   }
@@ -237,7 +269,11 @@ static int onEdit(int col, int row, CellEditAction action) {
         return 1;
       }
       return 0;
-    case 4: handled=!col?editSigned8(action,&sample->pitch,12,-48,48):0; break;
+    case 4:
+      if (pitchLocked(sample)) return 0;
+      handled = col == 0 ? editSigned8(action, &sample->pitch, 12, -48, 48)
+                         : editSigned8(action, &sample->timing.finePitch, 10, -99, 99);
+      break;
     case 5: {
       if (col) return 0;
       uint8_t index = sample->stretchMode <= 6 ? sample->stretchMode : 0;
@@ -265,6 +301,25 @@ static int onEdit(int col, int row, CellEditAction action) {
         handled = !col ? editNormalized16(action, &sample->speedPercent, 500) : 0;
       }
       break;
+    case 8: {
+      uint8_t algorithm = algorithmCell(sample);
+      handled = edit8noLast(action, &algorithm, 1, 0, (uint8_t)SampleAlgorithm::Repitch + 1);
+      if (handled) {
+        const auto selected = algorithm < 2 ? SampleAlgorithm::Legacy : (SampleAlgorithm)(algorithm - 1);
+        if (selected == SampleAlgorithm::Beat || selected == SampleAlgorithm::BeatPro) {
+          audioManager.pause();
+          sample->timing.algorithm = (uint8_t)selected;
+          samplePrepareBeatOnsets(sample);
+          chipnomadQueueProjectRefresh(chipnomadState);
+          audioManager.resume();
+        } else {
+          sample->timing.algorithm = (uint8_t)selected;
+          if (algorithm < 2) sample->speedAlgorithm = algorithm;
+        }
+        screenFullRedraw(&screenInstrumentSample);
+      }
+      break;
+    }
   }
   if (handled) projectModified = 1;
   return handled;
@@ -280,7 +335,9 @@ static int loadAdjacentSample(int direction) {
 
 static int isCellValid(int col, int row) {
   // Speed is inert while Stretch drives the duration: skip it in navigation.
-  if (!col && row == 7 && chipnomadState->project.instruments[cInstrument].chip.sample.stretchMode != 0) return 0;
+  const auto* sample = &chipnomadState->project.instruments[cInstrument].chip.sample;
+  if (!col && row == 7 && sample->stretchMode != 0) return 0;
+  if (row == 4 && col < 2 && pitchLocked(sample)) return 0;
   if (row == 3) {
     // The EDIT/REC button is always available: recording works with no
     // armed input, and the editor handles an empty sample.

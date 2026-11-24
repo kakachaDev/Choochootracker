@@ -368,6 +368,36 @@ int main(int argc,char** argv){
   if(argc!=2&&argc!=3) return 1;
   setvbuf(stdout, nullptr, _IONBF, 0);
   output=argv[1];initDefaultAppSettings();appSettings.screenWidth=640;appSettings.screenHeight=480;fontSetCurrent(fontGetDefault());require(!gfxSetup(&appSettings.screenWidth,&appSettings.screenHeight),"SDL dummy setup");
+  if (argc == 3 && !strcmp(argv[2], "--sampler-stretch-only")) {
+    chipnomadState = chipnomadCreate();
+    require(chipnomadState != nullptr, "Sampler state");
+    screensInitAll();
+    auto& instrument = chipnomadState->project.instruments[0];
+    getInstrumentFunctions(InstrumentType::Sample).init(&instrument);
+    auto& sample = instrument.chip.sample;
+    screenSetup(&screenInstrument, 0);
+    appDraw();
+    auto& editor = screenInstrumentSample;
+    require(screenTouchTap(9, 8) && editor.cursorCol == 0, "Sampler Semi touch cell");
+    require(screenTouchTap(14, 8) && editor.cursorCol == 1, "Sampler Fine touch cell");
+    require(screenTouchTap(26, 8) && editor.cursorCol == 2, "Sampler filter touch cell");
+    require(editor.onEdit(0, 4, CellEditAction::increase) && sample.pitch == 1, "Sampler Semi step");
+    require(editor.onEdit(1, 4, CellEditAction::decrease) && sample.timing.finePitch == -1, "Sampler Fine step");
+    require(screenTouchTap(10, 12) && editor.cursorRow == 8, "Sampler algorithm touch cell");
+    for (int i = 0; i < 7; ++i)
+      require(editor.onEdit(0, 8, CellEditAction::increase), "Sampler algorithm step");
+    require(sample.timing.algorithm == (uint8_t)SampleAlgorithm::Repitch, "Repitch selection");
+    require(!screenTouchTap(9, 8) && !screenTouchTap(14, 8), "Repitch locks both Pitch fields");
+    require(!editor.onEdit(1, 4, CellEditAction::clear), "Repitch preserves saved Fine value");
+    require(editor.onEdit(0, 8, CellEditAction::decrease), "Leave Repitch");
+    require(sample.pitch == 1 && sample.timing.finePitch == -1 && screenTouchTap(14, 8),
+            "Leaving Repitch restores the Pitch fields");
+    chipnomadDestroy(chipnomadState);
+    chipnomadState = nullptr;
+    gfxCleanup();
+    puts("Sampler stretch UI passed");
+    return 0;
+  }
   if(argc==3 && !strcmp(argv[2],"--midi-export-only")) {
     namespace fs = std::filesystem;
     chipnomadState = chipnomadCreate();

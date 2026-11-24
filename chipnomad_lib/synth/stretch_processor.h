@@ -38,6 +38,9 @@ class StretchProcessor {
   void configure(const InstrumentSample* sample, uint8_t stretchMode,
                  float tickRateHz, float pitchSemitones, uint8_t startMarker,
                  uint8_t endMarker, uint8_t loopMode, uint8_t loopStart = 0);
+  void configureWindow(const InstrumentSample* sample, uint8_t stretchMode, float speedPercent,
+                       float tickRateHz, float pitchSemitones, uint32_t startFrame,
+                       uint32_t endFrame, bool reverse, uint8_t loopMode, uint8_t loopStart);
   void noteOn();
   // Renders up to `frames` stereo-interleaved output frames into `out`.
   // Returns false when the voice must be killed (non-finite audio or, for

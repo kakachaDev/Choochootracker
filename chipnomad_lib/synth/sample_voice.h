@@ -9,6 +9,12 @@
 #include "loop_xfade.h"
 
 struct InstrumentSample;
+struct InstrumentSampler;
+struct SampleTimeSettings;
+enum class SampleAlgorithm : uint8_t;
+
+// Refresh derived Beat/Beat Pro onsets outside the audio callback.
+void samplePrepareBeatOnsets(InstrumentSampler* sample);
 
 class SampleVoice {
  public:
@@ -19,7 +25,7 @@ class SampleVoice {
                  int release = -1, int envelopeShape = -1, uint8_t sliceCount = 0,
                  uint8_t sliceIndex = 0, uint8_t stretchMode = 0, float tickRateHz = 50.0f,
                  uint8_t speedAlgorithm = 0, uint8_t forceReverse = 0, uint8_t loopStart = 0,
-                 uint8_t xfade = 0);
+                 uint8_t xfade = 0, const SampleTimeSettings* timing = nullptr);
   void noteOn();
   void noteOff();
   void kill();
@@ -69,6 +75,28 @@ class SampleVoice {
   bool active_;
   StretchProcessor stretch_;
   bool useStretch_;
+  SampleAlgorithm algorithm_{};
+  const SampleTimeSettings* timing_ = nullptr;
+  double pitchStep_ = 1.0;
+  bool timingPaused_ = false;
+  float pauseFrom_[2]{};
+  uint32_t pauseRemaining_ = 0;
+  bool timingGrains_ = false;
+  bool timingLooped_ = false;
+  double timingHead_[2]{};
+  double timingReadStep_[2]{};
+  uint32_t timingAge_[2]{};
+  uint32_t beatFirst_ = 0, beatEnd_ = 0;
+  int beatDirection_ = 0;
+  uint64_t beatElapsed_ = 0;
+  uint32_t beatHop_ = 1;
+  uint32_t beatWarmup_ = 0;
+  void resetTimingGrains(double origin, double readStep, uint32_t hop);
+  template <typename Read>
+  void timingGrainFrame(float* output, double nominal, double readStep, uint32_t hop,
+                        bool align, const Read& read);
+  void beatBounds(uint32_t& first, uint32_t& end) const;
+  void beatFrame(float* output);
   // Seamless loop crossfade. Armed when the playhead enters the fade window
   // (25% of the loop window, in source frames) before a wrap;
   // the fade mixes the outgoing pass (still reading toward the seam) with
@@ -81,7 +109,9 @@ class SampleVoice {
   // source-frame distance to the next seam so the render loop can arm the
   // crossfade when the playhead enters the fade window.
   double seamDistance() const;
+  void foldTimingPosition(double& position, int& direction) const;
   void wrap();
+  void finishLoopFade();
   void renderTailFrame(float* frame);
   template <bool Filter, bool UnityEnvelope>
   size_t renderPlain(float* output, size_t frames);

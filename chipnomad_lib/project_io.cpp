@@ -1552,7 +1552,8 @@ static void projectLoadRelativeSamples(Project* project, const char* projectPath
         srWavetableLoadWav(fullPath, sample, &instrument->chip.byowtbl.frameSize[index],
                          &instrument->chip.byowtbl.tableFrames[index], error, sizeof(error));
       } else {
-        sampleLoadWav16(fullPath, sample, error, sizeof(error));
+        if (!sampleLoadWav16(fullPath, sample, error, sizeof(error)) && instrument->type == InstrumentType::Sample)
+          samplePrepareBeatOnsets(&instrument->chip.sample);
       }
     }
   }
@@ -1609,7 +1610,9 @@ int projectLoad(Project* p, const char* path) {
                                 &instrument->chip.byowtbl.frameSize[j],
                                 &instrument->chip.byowtbl.tableFrames[j], error, sizeof(error));
         } else {
-          sampleLoadWav16File(sampleFile, samples[j]->path, samples[j], error, sizeof(error));
+          if (!sampleLoadWav16File(sampleFile, samples[j]->path, samples[j], error, sizeof(error)) &&
+              instrument->type == InstrumentType::Sample)
+            samplePrepareBeatOnsets(&instrument->chip.sample);
         }
         fclose(sampleFile);
       }

@@ -11,8 +11,10 @@
 #include "audio_monitor.h"
 #include "playback.h"
 #include "project.h"
+#include "project_utils.h"
 #include "screens/screens.h"
 #include "output_safety_limiter.h"
+#include "synth/sample_voice.h"
 #include "audio_input_manager.h"
 
 namespace {
@@ -173,9 +175,86 @@ double render(Project* project, int sampleRate, int seconds, const char* variant
   chipnomadDestroy(state);
   return elapsed;
 }
+int benchmarkSamplerStretch(const char* path) {
+  constexpr int sampleRate = 32000, frames = 2048, blocks = 320;
+  struct Mode { SampleAlgorithm id; const char* label; };
+  constexpr Mode modes[] = {
+    {SampleAlgorithm::Repitch, "Repitch"}, {SampleAlgorithm::Granular, "Granular"},
+    {SampleAlgorithm::Wsola, "WSOLA"}, {SampleAlgorithm::Beat, "Beat"},
+    {SampleAlgorithm::BeatPro, "Beat Pro"}, {SampleAlgorithm::Spectral, "Spectral"}
+  };
+  for (int tracks : {4, 8}) for (const auto& mode : modes) {
+    ChipNomadState* state = chipnomadCreate();
+    if (!state) return 1;
+    Project& project = state->project;
+    projectInitAY(&project);
+    project.tracksCount = tracks;
+    project.tickRate = 48;
+    auto& instrument = project.instruments[0];
+    getInstrumentFunctions(InstrumentType::Sample).init(&instrument);
+    auto& sample = instrument.chip.sample;
+    char error[96];
+    if (sampleLoadWav16(path, &sample, error, sizeof(error))) {
+      std::fprintf(stderr, "%s: %s\n", path, error);
+      chipnomadDestroy(state);
+      return 1;
+    }
+    sample.timing.algorithm = (uint8_t)mode.id;
+    samplePrepareBeatOnsets(&sample);
+    sample.stretchMode = 5;
+    sample.loopMode = 1;
+    sample.filterEnabled = 0;
+    sample.sustain = 255;
+    for (int track = 0; track < tracks; ++track) {
+      project.song[0][track] = 0;
+      project.trackVolume[track] = 80;
+    }
+    project.chains[0].rows[0].phrase = 0;
+    for (int row = 1; row < 4; ++row) project.chains[0].rows[row].phrase = 1;
+    phraseClear(&project.phrases[0]);
+    phraseClear(&project.phrases[1]);
+    auto& note = project.phrases[0].rows[0];
+    note.instrument = 0;
+    note.note = 48;
+    note.volume = 80;
+    chipnomadInitChips(state, sampleRate, nullptr);
+    if (chipnomadReserveRenderBuffers(state, frames) ||
+        !chipnomadQueuePlaybackStartSong(state, 0, 0, 1)) {
+      chipnomadDestroy(state);
+      return 1;
+    }
+    std::vector<double> times;
+    times.reserve(blocks);
+    float out[2 * frames];
+    int overBudget = 0;
+    double peak = 0;
+    const double budget = 1000.0 * frames / sampleRate;
+    for (int block = 0; block < blocks; ++block) {
+      const auto start = std::chrono::steady_clock::now();
+      chipnomadRender(state, out, frames);
+      const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+      overBudget += elapsed > budget;
+      times.push_back(elapsed);
+      for (float value : out) if (std::isfinite(value)) peak = std::max(peak, (double)std::abs(value));
+    }
+    chipnomadDestroy(state);
+    if (peak == 0) {
+      std::fprintf(stderr, "%s: benchmark rendered silence\n", mode.label);
+      return 1;
+    }
+    std::sort(times.begin(), times.end());
+    std::printf("%d tracks %-8s p95 %6.2f ms, max %6.2f ms, > %.0f ms: %d/%d\n",
+                tracks, mode.label, times[blocks * 95 / 100 - 1], times.back(), budget, overBudget, blocks);
+  }
+  std::puts("Offline engine render at 32 kHz / 2048 frames / Stretch 4bar; no device underrun measurement.");
+  return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc > 1 && !std::strcmp(argv[1], "--sampler-stretch"))
+    return benchmarkSamplerStretch(argc > 2 ? argv[2] : "packaging/common/SR_wavetables/WaveEdit/AMEN.WAV");
   if (argc > 1 && !std::strcmp(argv[1], "--audio-ring")) {
     AudioInputRing ring;
     int16_t input[kBlockFrames * 2], output[kBlockFrames * 2];

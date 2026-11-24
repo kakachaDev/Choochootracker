@@ -628,6 +628,8 @@ static int screenTouchCellAt(int col, int row, int* targetCol, int* targetRow) {
     if (mappedCol < 0) mappedCol = 0;
   } else if (instrumentCommonRow == 2) {
     mappedCol = col < 18 ? 0 : col < 28 ? 1 : 2; // Transpose, tick, volume
+  } else if (currentScreen == &screenInstrument && touchScreenData == &screenInstrumentSample && row == 4) {
+    mappedCol = instrumentSamplePitchTouchColumn(col);
   } else if (currentScreen == &screenInstrument && columns == 2) {
     mappedCol = col >= kColumnNameX[1]; // the two columns of a sound page
   }

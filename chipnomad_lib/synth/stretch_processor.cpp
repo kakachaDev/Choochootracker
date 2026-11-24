@@ -2,6 +2,7 @@
 
 #include "../project_instruments.h"
 #include "loop_xfade.h"
+#include "sample_timing.h"
 
 #include <cmath>
 #include <new>
@@ -84,6 +85,21 @@ void StretchProcessor::configure(const InstrumentSample* sample, uint8_t stretch
                                  uint16_t speedPercent, float tickRateHz, float pitchSemitones,
                                  uint8_t startMarker, uint8_t endMarker, uint8_t loopMode,
                                  uint8_t loopStart) {
+  const uint32_t frames = sample ? sample->frameCount : 0;
+  uint32_t start = sampleMarkerToStartFrame(frames, startMarker);
+  uint32_t end = sampleMarkerToEndFrame(frames, endMarker);
+  const bool reverse = startMarker > endMarker;
+  if (reverse) std::swap(start, end);
+  if (end <= start) end = start + 1;
+  if (end > frames) end = frames;
+  configureWindow(sample, stretchMode, speedPercent, tickRateHz, pitchSemitones,
+                  start, end, reverse, loopMode, loopStart);
+}
+
+void StretchProcessor::configureWindow(const InstrumentSample* sample, uint8_t stretchMode,
+                                       float speedPercent, float tickRateHz, float pitchSemitones,
+                                       uint32_t startFrame, uint32_t endFrame, bool reverse,
+                                       uint8_t loopMode, uint8_t loopStart) {
   if (!stretch_ || !sample || !sample->data || sample->frameCount == 0 ||
       (stretchMode == 0 && speedPercent == 0)) {
     configured_ = false;
@@ -105,18 +121,6 @@ void StretchProcessor::configure(const InstrumentSample* sample, uint8_t stretch
   bool xfadeOn = loopMode_ == 2 || loopMode_ == 4;
   if (loopMode_ == 2 || loopMode_ == 4) loopMode_ -= 1;
 
-  // Source window: same Start/End mapping as the plain playback path, with
-  // the same reverse detection (Start > End plays the window backwards).
-  uint32_t startFrame = sampleMarkerToStartFrame(sampleFrames_, startMarker);
-  uint32_t endFrame = sampleMarkerToEndFrame(sampleFrames_, endMarker);
-  bool reverse = startMarker > endMarker;
-  if (reverse) {
-    uint32_t swap = startFrame;
-    startFrame = endFrame;
-    endFrame = swap;
-  }
-  if (endFrame <= startFrame) endFrame = startFrame + 1;
-  if (endFrame > sampleFrames_) endFrame = sampleFrames_;
   // windowReverse_ records the CONFIGURED window direction (marker order);
   // sourceReverse_/sourceDirection_ are runtime playback state that ping-pong
   // flips in process(). Comparing the runtime flag here would treat every
@@ -155,18 +159,7 @@ void StretchProcessor::configure(const InstrumentSample* sample, uint8_t stretch
   }
 
   double sourceSeconds = (double)(sourceEndFrame_ - sourceStartFrame_) / sampleRate_;
-  double targetSeconds;
-  if (stretchMode != 0) {
-    // Target duration: stretchMode musical divisions at the current tempo.
-    // 24 ticks = 1 beat, 96 ticks = 1 bar (4 beats).
-    static const uint32_t kTargetTicks[7] = {0, 24, 48, 96, 192, 384, 768};
-    uint32_t targetTicks = kTargetTicks[stretchMode <= 6 ? stretchMode : 0];
-    targetSeconds = (double)targetTicks / ((double)tickRateHz > 0.0 ? (double)tickRateHz : 50.0);
-  } else {
-    // Speed mode keeps pitch steady and changes duration, matching the dirty
-    // granular path: 200% speed consumes twice as much source per output frame.
-    targetSeconds = sourceSeconds * 100.0 / (double)speedPercent;
-  }
+  const double targetSeconds = sampleTargetSeconds(sourceSeconds, stretchMode, tickRateHz, speedPercent);
   stretchRatio_ = (sourceSeconds > 0.0 && targetSeconds > 0.0)
     ? targetSeconds / sourceSeconds
     : 1.0;

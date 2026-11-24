@@ -43,9 +43,6 @@ static constexpr int selEndValX = 26;
 static constexpr int loopStartLabelX = 9;   // "START"
 static constexpr int loopStartValX = 15;
 static constexpr int loopStartValWidth = 6;
-static constexpr int spdAlgoLabelX = 22;    // "SPD ALGO"
-static constexpr int spdAlgoValX = 26;
-static constexpr int spdAlgoValWidth = 6;
 // A blank row separates the preview from the field block; the File row
 // stays above the message line (screen row 19). The two recording rows
 // (Input at y=2, REC at y=3) squeeze the preview to seven rows.
@@ -63,7 +60,6 @@ static inline int fieldY(int row) {
   if (row == 5) return fieldRow0 + 2; // Loop start draws above Slice
   return fieldRow0 + row - 2;
 }
-static const char* speedAlgorithmLabels[] = {"Dirty", "Clean"};
 
 // Slice row: one row hosting four value cells - Mode / Count / Slice /
 // Frame. The label sits at x=0; values start at x=6. No per-cell labels,
@@ -154,7 +150,7 @@ static void sampleBasenameSansExt(const char* path, char* out, size_t outSize) {
   out[length] = 0;
 }
 
-static InstrumentSample* currentSample(void) {
+static InstrumentSampler* currentSample(void) {
   return &chipnomadState->project.instruments[cInstrument].chip.sample;
 }
 
@@ -231,7 +227,7 @@ static constexpr int recStatusX = 14;
 static constexpr int recStatusWidth = 18;
 static void settingsDrawField(int col, int row, CellState state);
 
-static InstrumentSample* recordTargetSample(void) {
+static InstrumentSampler* recordTargetSample(void) {
   if (recordInstrument < 0 || recordInstrument >= PROJECT_MAX_INSTRUMENTS) return nullptr;
   return &chipnomadState->project.instruments[recordInstrument].chip.sample;
 }
@@ -587,9 +583,6 @@ static void settingsUpdateHint(int row, int col, int ownsBar) {
   } else if (row == 5 && col == 0) {
     // Loop start cell: single static hint.
     issued = "Set the loop wrap point";
-  } else if (row == 5 && col == 1) {
-    // Speed algorithm cell: single static hint.
-    issued = "Pick the stretch algorithm";
   }
   if (issued) {
     if (!ownsBar || changed || strcmp(issued, hintOwnedText) != 0) {
@@ -1006,7 +999,7 @@ static int settingsColumnCount(int row) {
   if (row == 1) return recordState == RecordState::complete ? 2 : 1;
   if (row == 2 || row == 3) return 2;
   if (row == 4) return 4;
-  if (row == 5) return 2;
+  if (row == 5) return 1;
   if (row == 6) return 3;
   if (row == 7) return 2;
   return 1;
@@ -1051,7 +1044,6 @@ static void settingsDrawStatic(void) {
   gfxPrint(endLabelX, fieldY(3), "END");
   gfxPrint(0, fieldY(5), "Loop");
   gfxPrint(loopStartLabelX, fieldY(5), "START");
-  gfxPrint(spdAlgoLabelX, fieldY(5), "SPD ALGO");
   gfxPrint(0, fieldY(4), "Slice");
   gfxPrint(0, fieldY(6), "Process");
   gfxPrint(0, fieldY(7), "File");
@@ -1075,8 +1067,7 @@ static void settingsDrawCursor(int col, int row) {
     gfxCursor(x, fieldY(row), w);
   } else if (row == 5) {
     // Loop row: LST value + speed algorithm
-    gfxCursor(col == 0 ? loopStartValX : spdAlgoValX, fieldY(row),
-              col == 0 ? loopStartValWidth : spdAlgoValWidth);
+    gfxCursor(loopStartValX, fieldY(row), loopStartValWidth);
   } else if (row == 6) {
     gfxCursor(col == 0 ? valueX : col == 1 ? goX : undoX, fieldY(row),
               col == 0 ? opWidth : col == 1 ? goWidth : undoWidth);
@@ -1169,8 +1160,7 @@ static void settingsDrawField(int col, int row, CellState state) {
   }
   if (row == 5) {
     // Loop row: the LOOP START marker readout (hex frame, always
-    // adjustable - it is ignored in playback while no loop is active)
-    // and the speed algorithm selector.
+    // adjustable - it is ignored in playback while no loop is active).
     if (col == 0) {
       gfxClearRect(loopStartValX, fieldY(row), loopStartValWidth, 1);
       if (!sample->data || sample->frameCount == 0) {
@@ -1180,10 +1170,6 @@ static void settingsDrawField(int col, int row, CellState state) {
         snprintf(text, sizeof(text), "%06X", (unsigned)loopStartDisplayFrame(sample));
         gfxPrint(loopStartValX, fieldY(row), text);
       }
-    } else {
-      gfxClearRect(spdAlgoValX, fieldY(row), spdAlgoValWidth, 1);
-      gfxPrint(spdAlgoValX, fieldY(row),
-               speedAlgorithmLabels[sample->speedAlgorithm <= 1 ? sample->speedAlgorithm : 0]);
     }
     return;
   }
@@ -1324,7 +1310,7 @@ static void settingsRepaintAfterOp(void) {
 // sample when no selection is active). Pauses audio while the buffer is
 // swapped or edited, prepares the one-level undo slot first.
 static void settingsRunProcessOp(void) {
-  InstrumentSample* sample = currentSample();
+  auto* sample = currentSample();
   if (processOp < 0) {
     screenMessage(MESSAGE_TIME, "Select operation");
     return;
@@ -1350,6 +1336,7 @@ static void settingsRunProcessOp(void) {
       case 5: result = sampleOpFade(sample, selStart, selEnd, 0); break;
       case 6: result = sampleOpReverse(sample, selStart, selEnd); break;
     }
+    if (result == sampleOpOk) samplePrepareBeatOnsets(sample);
   }
   chipnomadQueueProjectRefresh(chipnomadState);
   audioManager.resume();
@@ -1383,9 +1370,10 @@ static void settingsRunProcessOp(void) {
 
 static void settingsRunUndo(void) {
   if (!editorUndo.active) return;
-  InstrumentSample* sample = currentSample();
+  auto* sample = currentSample();
   audioManager.pause();
   int result = sampleOpApplyUndo(sample, &editorUndo);
+  if (result == sampleOpOk) samplePrepareBeatOnsets(sample);
   chipnomadQueueProjectRefresh(chipnomadState);
   audioManager.resume();
   if (result != sampleOpOk) {
@@ -1591,7 +1579,7 @@ static void recordStop(void) {
     screenMessage(MESSAGE_TIME, "Cancelled");
     return;
   }
-  InstrumentSample* sample = recordTargetSample();
+  auto* sample = recordTargetSample();
   if (!sample || !recordFilePath[0]) {
     recordState = RecordState::idle;
     recordWaveformDirty = 1;
@@ -1605,6 +1593,7 @@ static void recordStop(void) {
   audioManager.pause();
   int result = sampleLoadWav16Cues(recordFilePath, sample, cueFrames, &cueCount,
                                    error, sizeof(error));
+  if (!result) samplePrepareBeatOnsets(sample);
   chipnomadQueueProjectRefresh(chipnomadState);
   audioManager.resume();
   if (result) {
@@ -2160,15 +2149,7 @@ static int settingsOnEdit(int col, int row, CellEditAction action) {
       }
       return handled;
     }
-    // col 1: speed algorithm (unchanged behavior, new position)
-    uint8_t algorithm = sample->speedAlgorithm <= 1 ? sample->speedAlgorithm : 0;
-    handled = edit8noLast(action, &algorithm, 1, 0, 1);
-    if (handled) {
-      sample->speedAlgorithm = algorithm;
-      projectModified = 1;
-      settingsDrawField(1, 5, CellState::focus);
-    }
-    return handled;
+    return 0;
   }
   if (row == 6) {
     if (col == 0) {

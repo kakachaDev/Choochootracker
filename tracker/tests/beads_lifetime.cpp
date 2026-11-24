@@ -1,11 +1,13 @@
 // Standalone: global allocation hooks must not enter the application/test runner.
 #include "chipnomad_lib.h"
+#include "synth/sample_voice.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <thread>
 
@@ -63,7 +65,40 @@ void* operator new[](size_t bytes, const std::nothrow_t& tag) noexcept { return 
 void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
 void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
 
-int main() {
+static void checkSamplerAllocations() {
+  // Prepare PCM, onsets and Signalsmith storage before the callback.
+  InstrumentSampler sample{};
+  int16_t pcm[4096];
+  for (int i = 0; i < 4096; ++i) pcm[i] = (int16_t)(12000 * std::sin(i * 0.21));
+  sample.data = pcm;
+  sample.frameCount = 4096;
+  sample.channels = 1;
+  sample.sampleRate = 48000;
+  sample.sustain = 255;
+  SampleVoice voice;
+  voice.init(48000);
+  for (uint8_t id = (uint8_t)SampleAlgorithm::Granular; id <= (uint8_t)SampleAlgorithm::Repitch; ++id) {
+    sample.timing.algorithm = id;
+    samplePrepareBeatOnsets(&sample);
+    float out[2048]{};
+    audioThread = true;
+    voice.configure(&sample, 0, 1, 50, 0, 255, 1, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+    voice.noteOn();
+    for (int i = 0; i < 8; ++i) voice.render(out, 1024);
+    voice.stopImmediately();
+    audioThread = false;
+    for (float value : out) require(std::isfinite(value), "Sampler non-finite output");
+  }
+  require(audioAllocations == 0 && audioFrees == 0, "Sampler callback called new/delete");
+  std::puts("Sampler callback allocation check passed for all six modes");
+}
+
+int main(int argc, char** argv) {
+  if (argc > 1 && !std::strcmp(argv[1], "--sampler")) {
+    checkSamplerAllocations();
+    return 0;
+  }
   measureBeads = true;
   { BeadsInsert probe(48000); require(probe.ready(), "probe allocation"); }
   measureBeads = false;
@@ -179,6 +214,7 @@ int main() {
   chipnomadDestroy(state);
   require(liveBeads == 0, "shutdown leaked instances");
   require(audioAllocations == 0 && audioFrees == 0, "audio thread allocated or freed heap storage");
+  checkSamplerAllocations();
   std::printf("Beads lifetime passed: %zu bytes/instance; 0 unused, %d simultaneous; "
               "300 concurrent edits; zero audio new/delete calls; zero retained instances\n",
               beadsBytes, BeadsPool::capacity);

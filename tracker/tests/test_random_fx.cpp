@@ -72,7 +72,7 @@ struct LazyEngine {
     Instrument& inst = state->project.instruments[instrument];
     getInstrumentFunctions(InstrumentType::Sample).init(&inst);
     inst.volume = 255;
-    inst.chip.sample = sample; // copies the struct; data pointer shared
+    static_cast<InstrumentSample&>(inst.chip.sample) = sample; // PCM pointer shared
   }
 
   void render(int frames) {

@@ -14,6 +14,347 @@
 #include "test_helpers.h"
 using namespace testhelp;
 
+TEST_CASE("Repitch uses time settings rather than note pitch") {
+  std::vector<int16_t> pcm(48000);
+  for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = (int16_t)(20000 * sin(i * 2 * M_PI / 120));
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Repitch;
+  SampleVoice voice, other;
+  voice.init(48000);
+  other.init(48000);
+  auto config = [&](SampleVoice& v, float pitch, float speed, uint8_t stretch = 0) {
+    v.configure(&sample, pitch, 1, speed, 0, 255, 0, 20000, 0,
+                -1, -1, -1, -1, -1, 0, 0, stretch, 48, 0, 0, 0, 0, &sample.timing);
+  };
+  config(voice, 0, 50);
+  config(other, 1200, 50);
+  voice.noteOn();
+  other.noteOn();
+  std::vector<float> a(9600), b(a.size());
+  voice.render(a.data(), a.size() / 2);
+  other.render(b.data(), b.size() / 2);
+  CHECK(a == b);
+  CHECK(voice.playbackFrame() == doctest::Approx(2400));
+  int crossings = 0;
+  for (size_t i = 2; i < a.size(); i += 2) if (a[i - 2] <= 0 && a[i] > 0) ++crossings;
+  CHECK(crossings == 20);
+  config(voice, -300, 0);
+  voice.render(a.data(), a.size() / 2);
+  CHECK(voice.playbackFrame() == doctest::Approx(2400));
+  for (size_t i = 512; i < a.size(); ++i) CHECK(a[i] == 0.0f);
+  config(other, 1200, 50, 1);
+  other.noteOn();
+  other.render(b.data(), b.size() / 2);
+  CHECK(other.playbackFrame() == doctest::Approx(9600));
+}
+
+TEST_CASE("Beat Pro fills the tail without moving the attacks") {
+  constexpr uint32_t interval = 4800;
+  std::vector<int16_t> pcm(3 * interval * 2);
+  for (uint32_t i = 0; i < 3 * interval; ++i) {
+    const uint32_t local = i % interval;
+    const float amp = local < 16 ? 24000 : 4200;
+    const int16_t value = (int16_t)(amp * cos(local * 2 * M_PI / 96));
+    pcm[2 * i] = value;
+    pcm[2 * i + 1] = -value;
+  }
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size() / 2;
+  sample.sampleRate = 48000;
+  sample.channels = 2;
+  sample.sustain = 255;
+  auto render = [&](SampleAlgorithm algorithm) {
+    sample.timing.algorithm = (uint8_t)algorithm;
+    samplePrepareBeatOnsets(&sample);
+    REQUIRE(sample.timing.beatOnsetCount == 2);
+    CHECK(sample.timing.beatOnsets[0] == interval);
+    CHECK(sample.timing.beatOnsets[1] == 2 * interval);
+    SampleVoice voice;
+    voice.init(48000);
+    voice.configure(&sample, 0, 1, 50, 0, 255, 0, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+    voice.noteOn();
+    std::vector<float> output(6 * interval * 2);
+    // Use short blocks rather than one large offline render.
+    for (size_t i = 0; i < output.size() / 2; i += 128)
+      voice.render(output.data() + 2 * i, std::min<size_t>(128, output.size() / 2 - i));
+    return output;
+  };
+  const auto beat = render(SampleAlgorithm::Beat);
+  const auto pro = render(SampleAlgorithm::BeatPro);
+  const size_t attack = 2 * interval * 2;
+  for (size_t i = attack; i < attack + 64; ++i) CHECK(pro[i] == beat[i]);
+  CHECK(std::abs(pro[attack]) > 0.5f);
+  double proEnergy = 0;
+  for (size_t i = interval * 3; i < interval * 3 + 1024; i += 2) {
+    CHECK(beat[i] == 0.0f);
+    CHECK(pro[i] == -pro[i + 1]);
+    proEnergy += pro[i] * pro[i];
+  }
+  CHECK(proEnergy > 1.0);
+}
+
+TEST_CASE("Granular and WSOLA follow musical duration independently of pitch") {
+  std::vector<int16_t> pcm(24000 * 2);
+  for (size_t i = 0; i < pcm.size(); i += 2) {
+    pcm[i] = (int16_t)(18000 * sin(i * M_PI / 120));
+    pcm[i + 1] = -pcm[i];
+  }
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size() / 2;
+  sample.sampleRate = 48000;
+  sample.channels = 2;
+  sample.sustain = 255;
+  for (auto mode : {SampleAlgorithm::Granular, SampleAlgorithm::Wsola}) {
+    SampleVoice voice;
+    voice.init(48000);
+    sample.timing.algorithm = (uint8_t)mode;
+    voice.configure(&sample, 1200, 1, 500, 0, 255, 0, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 1, 24, 0, 0, 0, 0, &sample.timing);
+    voice.noteOn();
+    std::vector<float> output(96000);
+    voice.render(output.data(), 36000);
+    CHECK(voice.active());
+    CHECK(voice.playbackFrame() == doctest::Approx(18000));
+    int crossings = 0;
+    for (size_t i = 10000; i < 58000; i += 2) {
+      CHECK(output[i] == -output[i + 1]);
+      if (output[i - 2] <= 0 && output[i] > 0) ++crossings;
+    }
+    CHECK(crossings >= 395);
+    CHECK(crossings <= 405);
+    voice.render(output.data(), 12512);
+    CHECK_FALSE(voice.active());
+  }
+}
+
+TEST_CASE("Forced reverse uses the same marker window in Spectral and Repitch") {
+  int16_t pcm[1000]{};
+  InstrumentSampler sample{};
+  sample.data = pcm;
+  sample.frameCount = 1000;
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  for (auto mode : {SampleAlgorithm::Spectral, SampleAlgorithm::Repitch}) {
+    sample.timing.algorithm = (uint8_t)mode;
+    SampleVoice voice;
+    voice.init(48000);
+    voice.configure(&sample, 0, 1, 100, 64, 192, 0, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 1, 0, 0, &sample.timing);
+    voice.noteOn();
+    // Spectral skips its seek for this short window and starts at the final frame.
+    CHECK((uint32_t)voice.playbackFrame() == sampleMarkerToEndFrame(1000, 192) - 1);
+  }
+}
+
+TEST_CASE("Repitch safely skips crossfades shorter than one output frame") {
+  int16_t pcm[] = {1000, 2000, 3000, 4000, 5000, 6000};
+  InstrumentSampler sample{};
+  sample.data = pcm;
+  sample.frameCount = 6;
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Repitch;
+  for (uint8_t mode : {2, 4}) {
+    SampleVoice voice;
+    voice.init(48000);
+    voice.configure(&sample, 0, 1, 500, 0, 255, mode, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 102, 0, &sample.timing);
+    voice.noteOn();
+    for (int i = 0; i < 128; ++i) {
+      float frame[2];
+      voice.render(frame, 1);
+      CHECK(voice.playbackFrame() >= 0);
+      CHECK(voice.playbackFrame() < sample.frameCount);
+      CHECK(std::isfinite(frame[0]));
+    }
+  }
+}
+
+TEST_CASE("Repitch crossfade keeps the forward loop period at high playback rates") {
+  int16_t pcm[24]{};
+  pcm[5] = 30000;
+  InstrumentSampler sample{};
+  sample.data = pcm;
+  sample.frameCount = 24;
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Repitch;
+  SampleVoice voice;
+  voice.init(48000);
+  voice.configure(&sample, 0, 1, 500, 0, 255, 2, 20000, 0,
+                  -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+  voice.noteOn();
+  float out[10];
+  voice.render(out, 5);
+  CHECK(voice.playbackFrame() == doctest::Approx(1));
+  voice.configure(&sample, 0, 1, 100, 0, 255, 2, 20000, 0,
+                  -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+  voice.noteOn();
+  float loops[2 * 240];
+  voice.render(loops, 240);
+  CHECK(loops[2 * 239] == 0.0f); // The loud frame 5 must not leak into the seam.
+  CHECK(voice.playbackFrame() == 0);
+
+  pcm[5] = 0;
+  pcm[0] = 30000;
+  voice.configure(&sample, 0, 1, 500, 0, 255, 2, 20000, 0,
+                  -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+  voice.noteOn();
+  voice.render(loops, 240);
+  // Period is 24 output frames at stride 5. From 20, wrap lands at 1:
+  // both the outgoing and handoff samples are silent.
+  CHECK(loops[2 * (4 + 24 * 9)] == 0.0f);
+  CHECK(loops[2 * (5 + 24 * 9)] == 0.0f);
+}
+
+TEST_CASE("Beat bounds changes outside the active hit do not replay its attack") {
+  std::vector<int16_t> pcm(48000, 12000);
+  pcm[4000] = -30000;
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.timing.beatOnsets[0] = 4000;
+  sample.timing.beatOnsets[1] = 8000;
+  sample.timing.beatOnsetCount = 2;
+  for (auto mode : {SampleAlgorithm::Beat, SampleAlgorithm::BeatPro}) {
+    sample.timing.algorithm = (uint8_t)mode;
+    SampleVoice voice;
+    voice.init(48000);
+    auto configure = [&](uint8_t start) {
+      voice.configure(&sample, 0, 1, 100, start, 255, 0, 20000, 0,
+                      -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+    };
+    configure(0);
+    voice.noteOn();
+    std::vector<float> out(9000);
+    voice.render(out.data(), 4500);
+    configure(1);
+    voice.render(out.data(), 1);
+    CHECK(out[0] > 0.2f);
+  }
+}
+
+TEST_CASE("Beat Pro keeps its warm grains when Start moves before the first onset") {
+  std::vector<int16_t> pcm(48000);
+  for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = (int16_t)(14000 * cos(i * 0.11));
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::BeatPro;
+  sample.timing.beatOnsets[0] = sampleMarkerToStartFrame(sample.frameCount, 16);
+  sample.timing.beatOnsets[1] = 12000;
+  sample.timing.beatOnsetCount = 2;
+  SampleVoice edited, reference;
+  auto configure = [&](SampleVoice& voice, uint8_t start) {
+    voice.configure(&sample, 0, 1, 50, start, 255, 0, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+  };
+  std::vector<float> a(9600), b(a.size());
+  for (auto* voice : {&edited, &reference}) {
+    voice->init(48000);
+    configure(*voice, 16);
+    voice->noteOn();
+    voice->render(a.data(), a.size() / 2);
+  }
+  configure(edited, 0);
+  edited.render(a.data(), a.size() / 2);
+  reference.render(b.data(), b.size() / 2);
+  CHECK(a == b);
+}
+
+TEST_CASE("Live region modulation does not retrigger an explicit sampler envelope") {
+  std::vector<int16_t> pcm(48000, 12000);
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.attack = 100;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Repitch;
+  SampleVoice voice;
+  voice.init(48000);
+  auto configure = [&](uint8_t start) {
+    voice.configure(&sample, 0, 1, 100, start, 255, 0, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+  };
+  configure(0);
+  voice.noteOn();
+  float output[2048];
+  voice.render(output, 1024);
+  const double position = voice.playbackFrame();
+  const float before = voice.envelopeLevel();
+  configure(1);
+  CHECK(voice.playbackFrame() == position);
+  CHECK(voice.envelopeLevel() == before);
+  voice.render(output, 1024);
+  CHECK(voice.envelopeLevel() >= before);
+}
+
+TEST_CASE("Beat loops skip material before the loop start after the first pass") {
+  std::vector<int16_t> pcm(4096, 12000);
+  std::fill(pcm.begin(), pcm.begin() + 3000, -12000);
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  for (auto mode : {SampleAlgorithm::Beat, SampleAlgorithm::BeatPro}) {
+    sample.timing.algorithm = (uint8_t)mode;
+    SampleVoice voice;
+    voice.init(48000);
+    voice.configure(&sample, 0, 1, 100, 0, 255, 1, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 192, 0, &sample.timing);
+    voice.noteOn();
+    std::vector<float> out(2 * 4600);
+    voice.render(out.data(), out.size() / 2);
+    CHECK(out[300 * 2] < 0);
+    CHECK(out[4200 * 2] > 0);
+  }
+}
+
+TEST_CASE("Explicit sampler modes handle a one-frame reverse ping-pong window") {
+  int16_t pcm[] = {12000};
+  InstrumentSampler sample{};
+  sample.data = pcm;
+  sample.frameCount = 1;
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  for (auto mode : {SampleAlgorithm::Granular, SampleAlgorithm::Wsola, SampleAlgorithm::Beat,
+                    SampleAlgorithm::BeatPro, SampleAlgorithm::Repitch}) {
+    sample.timing.algorithm = (uint8_t)mode;
+    SampleVoice voice;
+    voice.init(48000);
+    voice.configure(&sample, 1200, 1, 500, 0, 255, 3, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 1, 0, 0, &sample.timing);
+    voice.noteOn();
+    float out[2048]{};
+    voice.render(out, 1024);
+    CHECK(voice.active());
+    CHECK(voice.playbackFrame() == 0);
+    for (float value : out) CHECK(std::isfinite(value));
+  }
+}
+
 TEST_CASE("SampleVoice renders PCM16 with envelope and every filter mode") {
   int16_t pcm[512];
   for (int i = 0; i < 512; ++i) {

@@ -1,4 +1,5 @@
 #include "sample_voice.h"
+#include "sample_timing.h"
 
 #include "../project_instruments.h"
 #include "../project_io_common.h"
@@ -8,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <algorithm>
 #include <array>
 
 namespace {
@@ -89,6 +91,10 @@ void SampleVoice::init(float outputSampleRate) {
   transitionLength_ = outputSampleRate > 500.0f ? (uint32_t)(outputSampleRate * 0.003f) : 2;
   if (transitionLength_ < 2) transitionLength_ = 2;
   useStretch_ = false;
+  algorithm_ = SampleAlgorithm::Legacy;
+  timingPaused_ = false;
+  pauseRemaining_ = 0;
+  timingGrains_ = false;
 #if defined(PORTMASTER_BUILD) || defined(ANDROID_BUILD) || defined(WEB_BUILD)
   stretch_.init(outputSampleRate_, true);
 #else
@@ -346,16 +352,27 @@ void SampleVoice::configure(const InstrumentSample* sample, float pitchCents,
                             int sustain, int release, int envelopeShape, uint8_t sliceCount,
                             uint8_t sliceIndex, uint8_t stretchMode, float tickRateHz,
                             uint8_t speedAlgorithm, uint8_t forceReverse, uint8_t loopStart,
-                            uint8_t xfade) {
+                            uint8_t xfade, const SampleTimeSettings* timing) {
   sample_ = sample;
+  timing_ = timing;
   post_.setGain(gain);
   if (!sample_ || !sample_->data || sample_->frameCount == 0) return;
 
-  // Stretch mode bypasses the granular speedPercent path entirely: the
-  // stretcher applies pitch via transpose and drives its own source cursor.
-  useStretch_ = sliceCount == 0 &&
-    (stretchMode != 0 || (speedAlgorithm == 1 && speedPercent != 0));
-  if (useStretch_) {
+  const auto algorithm = timing_ ? sampleNormalizeAlgorithm(timing_->algorithm) : SampleAlgorithm::Legacy;
+  const bool changedAlgorithm = algorithm_ != algorithm;
+  const bool wasTimingPaused = timingPaused_;
+  const auto previousStart = startFrame_;
+  const auto previousEnd = endFrame_;
+  const bool previousReverse = reverse_;
+  const double previousStep = step_;
+  const uint8_t previousLoopMode = loopMode_;
+  const uint32_t previousLoopStart = active_ ? loopStartFrame_ : 0;
+  algorithm_ = algorithm;
+  const bool legacy = algorithm == SampleAlgorithm::Legacy;
+  useStretch_ = legacy ? sliceCount == 0 &&
+    (stretchMode != 0 || (speedAlgorithm == 1 && speedPercent != 0))
+    : algorithm == SampleAlgorithm::Spectral;
+  if (legacy && useStretch_) {
     // The stretcher derives reverse playback from the marker order; swap
     // the markers when SPL 01 forces reverse on an ascending window.
     uint8_t stretchStart = start;
@@ -422,18 +439,45 @@ void SampleVoice::configure(const InstrumentSample* sample, float pitchCents,
   }
   if (endFrame_ <= startFrame_) endFrame_ = startFrame_ + 1;
   if (endFrame_ > sample_->frameCount) endFrame_ = sample_->frameCount;
-  if (!kCacheConfigurations || !stepConfigured_ || stepSampleRate_ != sample_->sampleRate ||
-      stepPitchCents_ != pitchCents) {
-    step_ = (sample_->sampleRate / outputSampleRate_) * pow(2.0, pitchCents / 1200.0);
+  if (algorithm != SampleAlgorithm::Repitch &&
+      (!kCacheConfigurations || !stepConfigured_ || stepSampleRate_ != sample_->sampleRate ||
+       stepPitchCents_ != pitchCents)) {
+    const float sourceRate = sample_->sampleRate ? sample_->sampleRate : outputSampleRate_;
+    pitchStep_ = (sourceRate / outputSampleRate_) * pow(2.0, pitchCents / 1200.0);
     stepSampleRate_ = sample_->sampleRate;
     stepPitchCents_ = pitchCents;
     stepConfigured_ = true;
   }
+  step_ = pitchStep_;
   timeStretch_ = speedPercent / 100.0f;
-  granular_ = fabsf(timeStretch_ - 1.0f) > 0.001f;
+  granular_ = legacy && fabsf(timeStretch_ - 1.0f) > 0.001f;
+  const bool wasTimingGrains = timingGrains_;
+  timingGrains_ = algorithm == SampleAlgorithm::Granular || algorithm == SampleAlgorithm::Wsola;
+  timingPaused_ = false;
+  if (!legacy) {
+    // User slices still use Speed. Stretch and user slicing remain mutually exclusive.
+    if (sliceCount) stretchMode = 0;
+    const double sourceRate = sample_->sampleRate ? sample_->sampleRate : outputSampleRate_;
+    const double length = endFrame_ - startFrame_;
+    const double seconds = sampleTargetSeconds(length / sourceRate, stretchMode, tickRateHz, speedPercent);
+    timingPaused_ = seconds <= 0;
+    step_ = timingPaused_ ? 0.0 : length / (seconds * outputSampleRate_);
+    if (useStretch_ && !timingPaused_) {
+      const auto stretchLoop = xfade && (loopMode == 1 || loopMode == 3) ? loopMode + 1 : loopMode;
+      stretch_.configureWindow(sample, stretchMode, speedPercent, tickRateHz, pitchCents / 100.0f,
+                               startFrame_, endFrame_, reverse_, stretchLoop, loopStart);
+    }
+    // A direct PCM read is identical at unity rate and pitch.
+    if (timingGrains_ && std::abs(step_ - pitchStep_) < 1e-6) timingGrains_ = false;
+  }
   if (!kCacheConfigurations) {
     grainSize_ = (uint32_t)(outputSampleRate_ * 0.040f);
     grainHop_ = grainSize_ / 2;
+  }
+  if (timingPaused_ && !wasTimingPaused) {
+    pauseFrom_[0] = lastOutput_[0];
+    pauseFrom_[1] = lastOutput_[1];
+    pauseRemaining_ = rampFrames_;
   }
   // Instrument loop modes: 0 off, 1 loop, 2 loop with X-fade, 3 ping-pong,
   // 4 ping-pong with X-fade. The X-fade flag comes from the mode itself;
@@ -465,7 +509,14 @@ void SampleVoice::configure(const InstrumentSample* sample, float pitchCents,
   if (xfadeOn && loopMode_ != 0) {
     const uint32_t loopLength = endFrame_ - loopStartFrame_;
     fadeLen = loopLength / 4;
-    if (fadeLen < 1) fadeLen = 0;
+    // A fade shorter than one output frame cannot be sampled safely.
+    if (fadeLen <= step_) fadeLen = 0;
+  }
+  if (!legacy && xfade_.active() && (fadeLen != xfade_.length() || previousStep != step_ ||
+      previousLoopStart != loopStartFrame_ || previousLoopMode != loopMode_)) {
+    position_ = xfade_.outgoingPosition();
+    xfade_.reset();
+    if (position_ < startFrame_ || position_ >= endFrame_) position_ = startFrame_;
   }
   if (fadeLen != xfade_.length()) xfade_.configure(fadeLen);
   post_.setFilter(sample_->filterEnabled != 0, sample_->filterCharacter, sample_->filterMode,
@@ -475,6 +526,36 @@ void SampleVoice::configure(const InstrumentSample* sample, float pitchCents,
                     (sustain < 0 ? sample_->sustain : sustain) / 255.0f,
                     envelopeTime(release < 0 ? sample_->release : release),
                     envelopeShape < 0 ? sample_->envelopeShape : envelopeShape);
+  if (active_) {
+    if (changedAlgorithm) {
+      stretch_.reset();
+      noteOn();
+    } else if (!legacy && (previousStart != startFrame_ || previousEnd != endFrame_ || previousReverse != reverse_)) {
+      // Start/End can be modulated at audio rate. Keep the envelope and
+      // in-range cursor; only rebuild state that depends on the old region.
+      if (previousReverse != reverse_) direction_ = reverse_ ? -1 : 1;
+      if (position_ < startFrame_ || position_ >= endFrame_) {
+        position_ = direction_ < 0 ? endFrame_ - 1.0 : startFrame_;
+        rampFrom_[0] = lastOutput_[0];
+        rampFrom_[1] = lastOutput_[1];
+        rampRemaining_ = rampFrames_;
+        beatDirection_ = 0;
+      }
+      if (beatDirection_) {
+        uint32_t first, end;
+        beatBounds(first, end);
+        if (previousReverse != reverse_ || first != beatFirst_ || end != beatEnd_) beatDirection_ = 0;
+      }
+      xfade_.reset();
+      if (timingGrains_) resetTimingGrains(position_, direction_ * pitchStep_, grainHop_);
+    } else if (!timingPaused_ && (wasTimingPaused || (timingGrains_ && !wasTimingGrains))) {
+      resetTimingGrains(position_, direction_ * pitchStep_, grainHop_);
+      if (wasTimingPaused) {
+        rampFrom_[0] = rampFrom_[1] = 0.0f;
+        rampRemaining_ = rampFrames_;
+      }
+    }
+  }
 }
 
 void SampleVoice::noteOn() {
@@ -488,6 +569,8 @@ void SampleVoice::noteOn() {
   transitionPending_ = false;
   transitionFrames_ = 0;
   post_.kill(); // Restart sample attack; the output ramp bridges the previous waveform.
+  beatDirection_ = 0;
+  timingLooped_ = false;
   if (useStretch_) {
     // A new note always restarts the stretched playback from the top of the
     // source window: tracks are monophonic, so a retrigger must kill the
@@ -500,9 +583,11 @@ void SampleVoice::noteOn() {
   }
   // A new note must not resume a fade armed for the previous one.
   xfade_.reset();
-  position_ = reverse_ ? (double)endFrame_ - 1.0 : startFrame_;
+  position_ = reverse_ ? (algorithm_ == SampleAlgorithm::Legacy ? endFrame_ - 1.0 :
+                          std::nextafter((double)endFrame_, (double)startFrame_)) : startFrame_;
   direction_ = reverse_ ? -1 : 1;
   grainExhausted_ = false;
+  if (timingGrains_) resetTimingGrains(position_, direction_ * pitchStep_, grainHop_);
   grainPosition_[0] = reverse_ ? endFrame_ - 1 : startFrame_;
   grainPosition_[1] = grainPosition_[0] + direction_ * step_ * grainHop_ * timeStretch_;
   grainAge_[0] = grainHop_;
@@ -530,10 +615,10 @@ float SampleVoice::grainSampleAt(double position, int channel) const {
   // With a loop mode active the granular fold uses the LOOP START marker as
   // the lower bound; without a loop it keeps the region start.
   const double first = loopMode_ != 0 ? loopStartFrame_ : startFrame_;
-  const double length = loopMode_ != 0 ? endFrame_ - loopStartFrame_
-                                       : endFrame_ - startFrame_;
+  const double length = endFrame_ - first;
+  const double passStart = timingLooped_ ? first : startFrame_;
   if (loopMode_ == 1 || loopMode_ == 2) {
-    if (position >= startFrame_ && position < endFrame_) {
+    if (position >= passStart && position < endFrame_) {
       // Inside the region: no fold, the first pass plays through.
     } else {
       position = fmod(position - first, length);
@@ -541,14 +626,18 @@ float SampleVoice::grainSampleAt(double position, int channel) const {
       position += first;
     }
   } else if (loopMode_ == 3 || loopMode_ == 4) {
-    if (position >= startFrame_ && position < endFrame_) {
+    if (position >= passStart && position < endFrame_) {
       // Inside the region: no fold, the first pass plays through.
     } else {
-      double span = length > 1.0 ? length - 1.0 : 1.0;
-      double period = span * 2.0;
-      position = fmod(position - first, period);
-      if (position < 0.0) position += period;
-      position = first + (position <= span ? position : period - position);
+      if (length <= 1.0) {
+        position = first;
+      } else {
+        const double span = length - 1.0;
+        const double period = span * 2.0;
+        position = fmod(position - first, period);
+        if (position < 0.0) position += period;
+        position = first + (position <= span ? position : period - position);
+      }
     }
   } else if (position < first || position >= endFrame_) {
     return 0.0f;
@@ -561,6 +650,122 @@ float SampleVoice::grainSampleAt(double position, int channel) const {
   float a = sample_->data[frame * sample_->channels + sourceChannel] / 32768.0f;
   float b = sample_->data[next * sample_->channels + sourceChannel] / 32768.0f;
   return a + (b - a) * (float)(position - frame);
+}
+
+void SampleVoice::resetTimingGrains(double origin, double readStep, uint32_t hop) {
+  timingHead_[0] = origin - hop * readStep;
+  timingAge_[0] = hop;
+  timingAge_[1] = 2 * hop;
+  timingReadStep_[0] = timingReadStep_[1] = readStep;
+  timingHead_[1] = origin;
+}
+
+template <typename Read>
+void SampleVoice::timingGrainFrame(float* output, double nominal, double readStep, uint32_t hop,
+                                   bool align, const Read& read) {
+  const int channels = sample_->channels == 1 ? 1 : 2;
+  for (int g = 0; g < 2; ++g) {
+    if (timingAge_[g] < 2 * hop) continue;
+    double offset = 0;
+    if (align) {
+      const int other = 1 - g;
+      const double reference = timingHead_[other] + timingAge_[other] * timingReadStep_[other];
+      constexpr int probes = 12;
+      float target[probes][2];
+      float referenceEnergy = 0;
+      for (int n = 0; n < probes; ++n) for (int ch = 0; ch < channels; ++ch) {
+        const float v = read(reference + (n * hop / probes) * timingReadStep_[other], ch);
+        target[n][ch] = v;
+        referenceEnergy += v * v;
+      }
+      // Nine candidates at most, one stereo-coherent shift per grain.
+      // Prefer the nominal hop on ties or silent overlaps.
+      float best = -2;
+      if (referenceEnergy > 1e-7f) for (int i : {0, -1, 1, -2, 2, -3, 3, -4, 4}) {
+        const double shift = (i * hop / 20.0) * readStep;
+        float dot = 0, energy = 0;
+        for (int n = 0; n < probes; ++n) for (int ch = 0; ch < channels; ++ch) {
+          const float v = read(nominal + shift + (n * hop / probes) * readStep, ch);
+          dot += target[n][ch] * v;
+          energy += v * v;
+        }
+        const float score = dot / sqrtf(referenceEnergy * energy + 1e-12f) - 0.02f * abs(i);
+        if (score > best) { best = score; offset = shift; }
+      }
+    }
+    timingHead_[g] = nominal + offset;
+    timingReadStep_[g] = readStep;
+    timingAge_[g] = 0;
+  }
+  const float scale = (float)kGrainWindowSegments / (2 * hop);
+  const float a = grainWindowAt(timingAge_[0], scale);
+  const float b = grainWindowAt(timingAge_[1], scale);
+  for (int ch = 0; ch < channels; ++ch) {
+    output[ch] = a * read(timingHead_[0] + timingAge_[0] * timingReadStep_[0], ch)
+              + b * read(timingHead_[1] + timingAge_[1] * timingReadStep_[1], ch);
+  }
+  if (channels == 1) output[1] = output[0];
+  ++timingAge_[0];
+  ++timingAge_[1];
+}
+
+void SampleVoice::beatBounds(uint32_t& start, uint32_t& end) const {
+  const uint32_t frame = (uint32_t)position_;
+  const uint32_t* first = timing_->beatOnsets;
+  const uint32_t* last = first + std::min<unsigned>(timing_->beatOnsetCount, PROJECT_SAMPLE_MAX_SLICES);
+  const uint32_t* next = std::upper_bound(first, last, frame);
+  start = next == first ? startFrame_ : std::max(startFrame_, next[-1]);
+  if (timingLooped_ || (direction_ < 0 && loopMode_ >= 3))
+    start = std::max(start, loopStartFrame_);
+  end = next == last ? endFrame_ : std::min(endFrame_, *next);
+}
+
+void SampleVoice::beatFrame(float* output) {
+  if (beatDirection_ != direction_ || position_ < beatFirst_ || position_ >= beatEnd_) {
+    beatBounds(beatFirst_, beatEnd_);
+    beatDirection_ = direction_;
+    beatElapsed_ = 0;
+    beatWarmup_ = 0;
+  }
+  const double sourceLength = beatEnd_ - beatFirst_;
+  const double outward = direction_ > 0 ? beatEnd_ - position_ : position_ - beatFirst_ + 1;
+  const double origin = direction_ > 0 ? beatFirst_ : beatEnd_ - 1;
+  const double signedPitch = direction_ * pitchStep_;
+  const double attack = std::min(sourceLength, outputSampleRate_ * 0.012 * pitchStep_);
+  const double natural = beatElapsed_ * pitchStep_;
+  const double remaining = outward / step_;
+  auto read = [&](double pos, int ch) {
+    if (pos < beatFirst_ || pos >= beatEnd_) return 0.0f;
+    // Never interpolate into the following event.
+    return sampleAt(std::min(pos, beatEnd_ - 1.0), ch);
+  };
+  const double tail = sourceLength - attack;
+  if (algorithm_ == SampleAlgorithm::BeatPro && natural >= attack && tail >= pitchStep_ * 32 &&
+      step_ < pitchStep_) {
+    const double tailElapsed = beatElapsed_ - attack / pitchStep_;
+    const double total = tailElapsed + remaining;
+    const double nominal = origin + direction_ * (attack + tail * tailElapsed / total);
+    if (!beatWarmup_) {
+      beatHop_ = std::max(1u, (uint32_t)std::min(tail / pitchStep_ / 3, (double)grainHop_));
+      resetTimingGrains(origin + direction_ * natural, signedPitch, beatHop_);
+      beatWarmup_ = 1;
+    }
+    timingGrainFrame(output, nominal, signedPitch, beatHop_, true, [&](double pos, int ch) {
+      return read(direction_ * (pos - origin) < attack ? origin + direction_ * attack : pos, ch);
+    });
+  } else {
+    const double pos = origin + direction_ * natural;
+    output[0] = read(pos, 0);
+    output[1] = sample_->channels == 1 ? output[0] : read(pos, 1);
+  }
+  // Limit the old tail before the next attack and fade to silence when Beat
+  // exhausts a segment early. No fades are applied to the incoming attack.
+  const double naturalRemaining = (sourceLength - natural) / pitchStep_;
+  const double fadeRemaining = beatWarmup_ ? remaining : std::min(remaining, naturalRemaining);
+  const float gain = (float)std::clamp(fadeRemaining / std::max(1.0, outputSampleRate_ * 0.002), 0.0, 1.0);
+  output[0] *= gain;
+  output[1] *= gain;
+  ++beatElapsed_;
 }
 
 double SampleVoice::seamDistance() const {
@@ -578,14 +783,40 @@ double SampleVoice::seamDistance() const {
   return endFrame_ - position_;
 }
 
+void SampleVoice::foldTimingPosition(double& position, int& direction) const {
+  const double first = loopStartFrame_;
+  const bool ping = loopMode_ >= 3;
+  const double span = endFrame_ - first - (ping ? 1 : 0);
+  if (span <= 0) {
+    position = first;
+  } else if (ping) {
+    // Unfold onto a forward-only timeline; handles rates larger than the loop span.
+    const double period = span * 2;
+    double phase = fmod(direction > 0 ? position - first : period - (position - first), period);
+    if (phase < 0) phase += period;
+    direction = phase < span ? 1 : -1;
+    position = first + (phase <= span ? phase : period - phase);
+  } else {
+    double phase = fmod(position - first, span);
+    if (phase < 0) phase += span;
+    position = first + phase;
+  }
+}
+
 void SampleVoice::wrap() {
   // The loop wraps between the LOOP START marker and the region end.
   double first = loopStartFrame_;
   double last = endFrame_ - 1.0;
-  if (loopMode_ == 1 || loopMode_ == 2) {
+  if (algorithm_ != SampleAlgorithm::Legacy) {
+    foldTimingPosition(position_, direction_);
+    beatDirection_ = 0;
+    timingLooped_ = true;
+  } else if (loopMode_ == 1 || loopMode_ == 2) {
     double length = endFrame_ - loopStartFrame_;
     while (position_ >= endFrame_) position_ -= length;
     while (position_ < loopStartFrame_) position_ += length;
+  } else if (last <= first) {
+    position_ = first;
   } else if (position_ > last) {
     position_ = last - (position_ - last);
     direction_ = -1;
@@ -593,6 +824,17 @@ void SampleVoice::wrap() {
     position_ = first + (first - position_);
     direction_ = 1;
   }
+}
+
+void SampleVoice::finishLoopFade() {
+  if (algorithm_ != SampleAlgorithm::Legacy) {
+    // Blend in the next pass without charging the fade's lookahead to the
+    // musical loop period. Advance and fold the outgoing clock as usual.
+    position_ = xfade_.outgoingPosition();
+  } else {
+    xfade_.takeIncoming(&position_, &direction_);
+  }
+  if (position_ < loopStartFrame_ || position_ >= endFrame_) wrap();
 }
 
 bool SampleVoice::advancePosition() {
@@ -603,7 +845,7 @@ bool SampleVoice::advancePosition() {
   // travel the region below the marker before entering the loop window.
   if ((loopMode_ == 3 || loopMode_ == 4) && direction_ < 0) {
     if (position_ >= loopStartFrame_ && position_ < endFrame_) return true;
-  } else if (position_ >= startFrame_ && position_ < endFrame_) {
+  } else if (position_ >= (timingLooped_ ? loopStartFrame_ : startFrame_) && position_ < endFrame_) {
     return true;
   }
   if (loopMode_ == 0) return false;
@@ -701,6 +943,19 @@ void SampleVoice::render(float* output, size_t frames) {
     return;
   }
 
+  if (timingPaused_) {
+    // Keep the source still while letting the note's envelope release.
+    for (size_t i = 0; i < frames; ++i) {
+      float* frame = output + i * 2;
+      post_.processStereo(frame);
+      const float weight = pauseRemaining_ ? (float)--pauseRemaining_ / rampFrames_ : 0.0f;
+      frame[0] = lastOutput_[0] = pauseFrom_[0] * weight;
+      frame[1] = lastOutput_[1] = pauseFrom_[1] * weight;
+      if (!post_.envelopeActive() && !pauseRemaining_) { kill(); break; }
+    }
+    return;
+  }
+
   if (useStretch_) {
     // The stretch processor owns the read pointer and applies its own
     // windowing; the loop X-fade is bypassed for this voice entirely.
@@ -745,7 +1000,8 @@ void SampleVoice::render(float* output, size_t frames) {
 
   size_t loopRendered = 0;
   const bool monoSource = sample_->channels == 1;
-  if (!granular_ && !xfade_.enabled() && !xfade_.active()) {
+  const bool beat = algorithm_ == SampleAlgorithm::Beat || algorithm_ == SampleAlgorithm::BeatPro;
+  if (!beat && !timingGrains_ && !granular_ && !xfade_.enabled() && !xfade_.active()) {
     if (post_.filterActive()) {
       loopRendered = post_.unityEnvelope() ? renderPlain<true, true>(output, frames)
                                           : renderPlain<true, false>(output, frames);
@@ -756,7 +1012,18 @@ void SampleVoice::render(float* output, size_t frames) {
   } else for (size_t i = 0; i < frames; i++) {
     loopRendered = i;
     if (!post_.envelopeActive()) { kill(); break; }
-    if (granular_) {
+    if (beat || timingGrains_) {
+      if (beat) {
+        beatFrame(output + i * 2);
+      } else {
+        timingGrainFrame(output + i * 2, position_, direction_ * pitchStep_, grainHop_,
+                         algorithm_ == SampleAlgorithm::Wsola,
+                         [this](double pos, int ch) { return grainSampleAt(pos, ch); });
+      }
+      post_.processStereo(output + i * 2);
+      finishFrame(output + i * 2);
+      if (!advancePosition()) { kill(); break; }
+    } else if (granular_) {
       // The granular path windows its own grains; the loop X-fade is not
       // applied here (its windowing already softens the wrap).
       for (int grain = 0; grain < 2; ++grain) {
@@ -810,9 +1077,7 @@ void SampleVoice::render(float* output, size_t frames) {
       }
       post_.processStereo(output + i * 2);
       finishFrame(output + i * 2);
-      if (!xfade_.advance(step_)) {
-        xfade_.takeIncoming(&position_, &direction_);
-      }
+      if (!xfade_.advance(step_)) finishLoopFade();
     } else if (xfade_.enabled() &&
                (loopMode_ == 3 || loopMode_ == 4 || direction_ > 0) &&
                seamDistance() <= (double)xfade_.length()) {
@@ -855,6 +1120,15 @@ void SampleVoice::render(float* output, size_t frames) {
         incomingPos = loopStartFrame_ + phase;
         incomingDir = 1;
       }
+      if (algorithm_ != SampleAlgorithm::Legacy) {
+        // Blend toward the actual post-fade read, including any fractional
+        // or multi-frame stride across the seam. Do not play ahead of it.
+        incomingPos = position_ + direction_ * std::max(1.0, std::ceil(remaining / step_)) * step_;
+        incomingDir = direction_;
+        if (incomingPos < loopStartFrame_ || incomingPos >= endFrame_)
+          foldTimingPosition(incomingPos, incomingDir);
+        incomingDir = 0;
+      }
       xfade_.arm(position_, incomingPos, direction_, incomingDir, phase);
       if (monoSource) {
         const float sample = xfade_.sample(
@@ -868,9 +1142,7 @@ void SampleVoice::render(float* output, size_t frames) {
       }
       post_.processStereo(output + i * 2);
       finishFrame(output + i * 2);
-      if (!xfade_.advance(step_)) {
-        xfade_.takeIncoming(&position_, &direction_);
-      }
+      if (!xfade_.advance(step_)) finishLoopFade();
     } else {
       output[i * 2] = sampleAt(position_, 0);
       output[i * 2 + 1] = monoSource ? output[i * 2] : sampleAt(position_, 1);
@@ -894,6 +1166,40 @@ void SampleVoice::render(float* output, size_t frames) {
     for (size_t i = loopRendered; i < frames && transitionFrames_; i++) {
       renderTailFrame(output + i * 2);
     }
+  }
+}
+
+void samplePrepareBeatOnsets(InstrumentSampler* sample) {
+  auto& timing = sample->timing;
+  timing.beatOnsetCount = 0;
+  const auto mode = sampleNormalizeAlgorithm(timing.algorithm);
+  if ((mode != SampleAlgorithm::Beat && mode != SampleAlgorithm::BeatPro) ||
+      !sample->data || !sample->channels) return;
+
+  // A small peak-envelope detector avoids FFT scratch allocations on load.
+  // Follow the louder channel, so antiphase stereo attacks remain detectable.
+  const uint32_t block = std::max(1u, sample->sampleRate / 500);
+  const uint32_t separation = std::max(1u, sample->sampleRate / 32);
+  float envelope = 0;
+  uint32_t lastOnset = 0;
+  for (uint32_t first = 0; first < sample->frameCount;) {
+    const uint32_t end = first + std::min(block, sample->frameCount - first);
+    const float threshold = std::max(256.0f, envelope * 2.3f);
+    int peak = 0;
+    uint32_t crossing = end;
+    for (uint32_t f = first; f < end; ++f) {
+      const int16_t* pcm = sample->data + (size_t)f * sample->channels;
+      const int magnitude = sample->channels == 1 ? abs(pcm[0]) : std::max(abs(pcm[0]), abs(pcm[1]));
+      if (magnitude > threshold && crossing == end) crossing = f;
+      peak = std::max(peak, magnitude);
+    }
+    if (crossing != end && crossing - lastOnset >= separation) {
+      timing.beatOnsets[timing.beatOnsetCount++] = crossing;
+      lastOnset = crossing;
+      if (timing.beatOnsetCount == PROJECT_SAMPLE_MAX_SLICES) break;
+    }
+    envelope = std::max((float)peak, envelope * 0.86f);
+    first = end;
   }
 }
 

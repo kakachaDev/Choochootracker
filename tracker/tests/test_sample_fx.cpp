@@ -76,7 +76,7 @@ struct LazyEngine {
     Instrument& inst = state->project.instruments[instrument];
     getInstrumentFunctions(InstrumentType::Sample).init(&inst);
     inst.volume = 255;
-    inst.chip.sample = sample; // copies the struct; data pointer shared
+    static_cast<InstrumentSample&>(inst.chip.sample) = sample; // PCM pointer shared
   }
 
   void render(int frames) {
@@ -513,7 +513,30 @@ SUBCASE("SPL 03 ping-pong respects the loop start marker") {
 
 }
 
-TEST_CASE("sample loop start survives save and load; missing field is zero") {
+TEST_CASE("Sampler Fine resumes after leaving Repitch") {
+  EngineSample es;
+  es.init(44100);
+  es.s.speedPercent = 50;
+  LazyEngine engine(es.s, 0);
+  auto& sample = engine.state->project.instruments[0].chip.sample;
+  sample.timing.finePitch = 50;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Repitch;
+  REQUIRE(chipnomadQueueProjectRefresh(engine.state));
+  PhraseRow row = makeRow(60);
+  REQUIRE(chipnomadQueuePlaybackStartPhraseRow(engine.state, 0, &row));
+  engine.render(882);
+  CHECK(engine.voice()->playbackFrame() == doctest::Approx(441));
+  CHECK(sample.timing.finePitch == 50);
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Legacy;
+  sample.speedPercent = 100;
+  REQUIRE(chipnomadQueueProjectRefresh(engine.state));
+  row.note = 48;
+  REQUIRE(chipnomadQueuePlaybackStartPhraseRow(engine.state, 0, &row));
+  engine.render(882);
+  CHECK(engine.voice()->playbackFrame() == doctest::Approx(882 * std::pow(2.0, 50.0 / 1200.0)));
+}
+
+TEST_CASE("Sampler timing and loop start survive save and load; missing fields use legacy defaults") {
   Project saved, loaded;
   projectInit(&saved);
   projectInit(&loaded);
@@ -525,13 +548,23 @@ TEST_CASE("sample loop start survives save and load; missing field is zero") {
   std::strcpy(saved.pitchTable.noteNames[0], "C-4");
   saved.pitchTable.values[0] = 1000;
   getInstrumentFunctions(InstrumentType::Sample).init(&saved.instruments[0]);
-  saved.instruments[0].chip.sample.loopStart = 0x40;
+  auto& original = saved.instruments[0].chip.sample;
+  original.loopStart = 0x40;
+  original.timing.algorithm = (uint8_t)SampleAlgorithm::BeatPro;
+  original.pitch = 2;
+  original.timing.finePitch = -15;
+  original.speedAlgorithm = 1;
   const char* path = "build/tests/sample_loop_start_io.cct";
   REQUIRE(projectSave(&saved, path) == 0);
   INFO(projectFileError);
   REQUIRE(projectLoad(&loaded, path) == 0);
   CHECK(loaded.instruments[0].type == InstrumentType::Sample);
-  CHECK(loaded.instruments[0].chip.sample.loopStart == 0x40);
+  const auto& recovered = loaded.instruments[0].chip.sample;
+  CHECK(recovered.loopStart == 0x40);
+  CHECK(recovered.timing.algorithm == (uint8_t)SampleAlgorithm::BeatPro);
+  CHECK(recovered.pitch == 2);
+  CHECK(recovered.timing.finePitch == -15);
+  CHECK(recovered.speedAlgorithm == 1);
 
   // A file without the field loads with loopStart 0 (Region START wrap).
   FILE* in = std::fopen(path, "r");
@@ -541,7 +574,9 @@ TEST_CASE("sample loop start survives save and load; missing field is zero") {
   REQUIRE(out != nullptr);
   char line[512];
   while (std::fgets(line, sizeof(line), in)) {
-    if (std::strncmp(line, "- Sample loop start:", 20) == 0) continue;
+    if (std::strncmp(line, "- Sample loop start:", 20) == 0 ||
+        std::strncmp(line, "- Sample algo:", 14) == 0 ||
+        std::strncmp(line, "- Sample fine pitch:", 20) == 0) continue;
     std::fputs(line, out);
   }
   std::fclose(in);
@@ -552,6 +587,9 @@ TEST_CASE("sample loop start survives save and load; missing field is zero") {
   REQUIRE(projectLoad(&missing, stripped) == 0);
   CHECK(missing.instruments[0].type == InstrumentType::Sample);
   CHECK(missing.instruments[0].chip.sample.loopStart == 0);
+  CHECK(missing.instruments[0].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Legacy);
+  CHECK(missing.instruments[0].chip.sample.timing.finePitch == 0);
+  CHECK(missing.instruments[0].chip.sample.speedAlgorithm == 1);
   std::remove(path);
   std::remove(stripped);
 }

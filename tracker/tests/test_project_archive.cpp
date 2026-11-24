@@ -41,6 +41,27 @@ void checkSample(const InstrumentSample& expected, const InstrumentSample& actua
 }
 }
 
+TEST_CASE("Embedded PCM regenerates Sampler Beat onsets on project load") {
+  auto saved = newProject(), loaded = newProject();
+  getInstrumentFunctions(InstrumentType::Sample).init(&saved->instruments[0]);
+  auto& sample = saved->instruments[0].chip.sample;
+  sample.sampleRate = 32000;
+  sample.frameCount = 4096;
+  sample.channels = 1;
+  sample.data = static_cast<int16_t*>(std::calloc(sample.frameCount, sizeof(int16_t)));
+  REQUIRE(sample.data != nullptr);
+  sample.data[3000] = 24000;
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Beat;
+  const char* path = "build/tests/archive-beat.cct";
+  REQUIRE(projectSave(saved.get(), path) == 0);
+  REQUIRE(projectLoad(loaded.get(), path) == 0);
+  const auto& actual = loaded->instruments[0].chip.sample;
+  CHECK(actual.timing.algorithm == (uint8_t)SampleAlgorithm::Beat);
+  REQUIRE(actual.timing.beatOnsetCount == 1);
+  CHECK(actual.timing.beatOnsets[0] == 3000);
+  std::remove(path);
+}
+
 TEST_CASE("upstream song archives retain native patches and every sample oscillator") {
   fillFXNames();
   auto saved = newProject(), loaded = newProject(), legacy = newProject();
