@@ -384,7 +384,8 @@ int main(int argc,char** argv){
     require(editor.onEdit(0, 4, CellEditAction::increase) && sample.pitch == 1, "Sampler Semi step");
     require(editor.onEdit(1, 4, CellEditAction::decrease) && sample.timing.finePitch == -1, "Sampler Fine step");
     require(screenTouchTap(10, 12) && editor.cursorRow == 8, "Sampler algorithm touch cell");
-    for (int i = 0; i < 7; ++i)
+    require(sample.timing.algorithm == (uint8_t)SampleAlgorithm::Granular, "New Sampler defaults to Granular");
+    for (int i = 0; i < 5; ++i)
       require(editor.onEdit(0, 8, CellEditAction::increase), "Sampler algorithm step");
     require(sample.timing.algorithm == (uint8_t)SampleAlgorithm::Repitch, "Repitch selection");
     require(!screenTouchTap(9, 8) && !screenTouchTap(14, 8), "Repitch locks both Pitch fields");
@@ -392,6 +393,15 @@ int main(int argc,char** argv){
     require(editor.onEdit(0, 8, CellEditAction::decrease), "Leave Repitch");
     require(sample.pitch == 1 && sample.timing.finePitch == -1 && screenTouchTap(14, 8),
             "Leaving Repitch restores the Pitch fields");
+    sample.slice = sampleEncodeSlice(sliceModeEqual, 4);
+    sample.sliceBounds[1] = 400;
+    require(editor.onEdit(0, 5, CellEditAction::increase) && sample.stretchMode == 1,
+            "Stretch enabled");
+    require(sampleDecodeSliceCount(sample.slice) == 4 && sample.sliceBounds[1] == 400,
+            "Stretch retains slice mode and boundaries");
+    require(sampleSettingsSliceTouchColumn(8, 15) == -1 && sampleSettingsSliceTouchColumn(9, 15) == 0 &&
+            sampleSettingsSliceTouchColumn(15, 15) == 1 && sampleSettingsSliceTouchColumn(18, 15) == 2 &&
+            sampleSettingsSliceTouchColumn(21, 15) == 3, "Slice touch cells align with editor values");
     chipnomadDestroy(chipnomadState);
     chipnomadState = nullptr;
     gfxCleanup();

@@ -525,6 +525,13 @@ static int screenTouchCellAt(int col, int row, int* targetCol, int* targetRow) {
     return 1;
   }
   if (currentScreen == &screenSampleSettings) {
+    const int sliceCol = sampleSettingsSliceTouchColumn(col, row);
+    if (sliceCol >= 0) {
+      if (touchScreenData->isCellValid && !touchScreenData->isCellValid(sliceCol, 4)) return 0;
+      if (targetCol) *targetCol = sliceCol;
+      if (targetRow) *targetRow = 4;
+      return 1;
+    }
     // Physical rows: y=2 Input (value x=6 w=8, meter x=24 w=2 display-only,
     // MON x=30 w=2),
     // y=3 REC/CLEAR buttons (x=0 w=6, x=7 w=6). The waveform box and the

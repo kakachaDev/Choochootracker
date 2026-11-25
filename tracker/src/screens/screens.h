@@ -109,6 +109,7 @@ extern const AppScreen screenPhrase;
 extern const AppScreen screenGroove;
 extern const AppScreen screenInstrument;
 extern const AppScreen screenSampleSettings;
+int sampleSettingsSliceTouchColumn(int x, int y);
 // Discards a completed editor recording (deletes its WAV, resets the
 // record state) without touching the instrument's sample slot. Called
 // when a new sample is loaded so the editor hosts one thing at a time.

@@ -1304,9 +1304,10 @@ This clean Sample engine plays mono or stereo PCM samples loaded into RAM.
     slice covering the whole window. Switching to LAZY stashes the current
     EQUAL/AUTO setting (count and bounds), and switching back to EQUAL or
     AUTO restores it verbatim - no confirmation is asked and nothing is
-    lost. Slice and Stretch are mutually exclusive: enabling one disables
-    the other, and the Slice cells are dimmed while Stretch drives the
-    duration.
+    lost. With musical Stretch enabled, the Sampler plays the full region
+    and retains the slice settings. Beat and Beat Pro use the slice markers
+    as hit boundaries and draw them as yellow dashed lines. The other
+    algorithms ignore the saved markers and draw them in gray.
   - **Count** shows the total number of slices (`01`..`64`). **EDIT +
     [LEFT/RIGHT]** steps it by one (minimum 1, maximum 64), **EDIT +
     [UP/DOWN]** cycles through the power-of-two counts `2 / 4 / 8 / 16 / 32 /
@@ -1392,15 +1393,15 @@ This clean Sample engine plays mono or stereo PCM samples loaded into RAM.
 - On the Sample instrument screen, use **EDIT + [LEFT/RIGHT]** to load the previous or next WAV in the same folder.
 - **Pitch** has two fields: semitones (`-48` to `+48`) and fine tuning in cents (`-99` to `+99`). Both fields are locked in `Repitch`, which takes pitch from playback speed. Their values are kept when switching modes.
 - **Loop** selects Off, Loop, Ping-Pong, Loop X-Fade or Ping-Pong X-Fade. The X-Fade modes crossfade the loop wrap over the last 25% of the loop window where supported by the algorithm.
-- **Speed** sets the playback rate from `0%` to `500%` when **Stretch** is Off. **Stretch** selects a fixed duration from one beat to eight bars at the project tempo and takes precedence over Speed. Musical Stretch and user slicing are mutually exclusive. At zero Speed the new modes hold the playback cursor and fade to silence.
+- **Speed** shows the rate from `0.00x` to `5.00x` when **Stretch** is Off. `1.00x` is the original duration. **Stretch** selects a fixed duration from one beat to eight bars at the project tempo and takes precedence over Speed. At zero Speed the Sampler holds the playback cursor and fades to silence. The phrase effect `SSP` still uses `00–FF`.
 - **ALGO** selects how the Sampler changes duration for both Speed and Stretch:
   - `Granular`: overlap-add with fixed grain spacing. Low CPU cost, with a texture that can soften attacks.
   - `WSOLA`: aligns overlapping grains by waveform similarity. Try it on voice or mixed loops.
   - `Beat`: moves detected hits to the new timing and tries to retain their attacks. Slowing down can leave gaps between hits.
-  - `Beat Pro`: uses the same hit timing and stretches eligible tails to reduce gaps. Silence in the source and very short tails can still leave gaps.
+  - `Beat Pro`: uses the same hit timing, protects the body of each hit, and stretches only eligible late decay. Intentional gaps and short or unsuitable tails retain their natural timing.
   - `Spectral`: Signalsmith. Try it on sustained or polyphonic material; it has a higher CPU cost.
   - `Repitch`: changes playback rate directly. At `50%` a note lasts twice as long and sounds one octave lower. The note triggers playback; note pitch and pitch effects do not transpose it.
-  - `Old Grn` and `Old FFT`: preserve the previous Speed behaviors. Both still use Signalsmith for unsliced beat/bar Stretch, as before. Existing instruments keep their legacy choice until you change ALGO.
+  - New Samplers start in `Granular`. When loading a project without `ALGO`, the tracker selects `Spectral` if musical Stretch was enabled or the old Speed algorithm was Clean. Otherwise it selects `Granular`.
 
 Unsupported WAV formats display an error. Convert unusual files to `PCM8`, `PCM16` or `PCM24` WAV before importing them.
 

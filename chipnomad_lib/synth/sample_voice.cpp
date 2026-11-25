@@ -145,7 +145,7 @@ uint8_t sampleNormalizeSliceEx(uint8_t slice) {
 }
 
 int sampleActsAsSliced(const InstrumentSample* sample) {
-  if (!sample) return 0;
+  if (!sample || sample->stretchMode) return 0;
   const SliceMode mode = sampleDecodeSliceMode(sample->slice);
   return mode != sliceModeOff;
 }
@@ -368,6 +368,10 @@ void SampleVoice::configure(const InstrumentSample* sample, float pitchCents,
   const uint8_t previousLoopMode = loopMode_;
   const uint32_t previousLoopStart = active_ ? loopStartFrame_ : 0;
   algorithm_ = algorithm;
+  const bool useSliceMarks = stretchMode != 0 && sample_->slice &&
+    (algorithm == SampleAlgorithm::Beat || algorithm == SampleAlgorithm::BeatPro);
+  if (beatUsesSlices_ != useSliceMarks) beatDirection_ = 0;
+  beatUsesSlices_ = useSliceMarks;
   const bool legacy = algorithm == SampleAlgorithm::Legacy;
   useStretch_ = legacy ? sliceCount == 0 &&
     (stretchMode != 0 || (speedAlgorithm == 1 && speedPercent != 0))
@@ -718,6 +722,57 @@ void SampleVoice::beatBounds(uint32_t& start, uint32_t& end) const {
   if (timingLooped_ || (direction_ < 0 && loopMode_ >= 3))
     start = std::max(start, loopStartFrame_);
   end = next == last ? endFrame_ : std::min(endFrame_, *next);
+  if (beatUsesSlices_) {
+    start = timingLooped_ || (direction_ < 0 && loopMode_ >= 3) ? loopStartFrame_ : startFrame_;
+    end = endFrame_;
+    const uint8_t count = sampleSliceBoundCount(sample_);
+    const bool stored = count && (sample_->sliceBounds[0] || (count > 1 && sample_->sliceBounds[1]));
+    for (uint8_t i = 0; i < count; ++i) {
+      const uint32_t mark = stored ? sample_->sliceBounds[i]
+        : startFrame_ + (uint32_t)((uint64_t)(endFrame_ - startFrame_) * i / count);
+      if (mark <= frame) start = std::max(start, mark);
+      else end = std::min(end, mark);
+    }
+  }
+}
+
+void SampleVoice::prepareBeatTail() {
+  beatTailStart_ = beatTailEnd_ = 0;
+  if (algorithm_ != SampleAlgorithm::BeatPro) return;
+  // Bound the analysis cost per hit regardless of PCM length. Use stereo
+  // peak envelopes across bins so individual zero crossings are immaterial.
+  constexpr unsigned bins = 48, probes = 24;
+  const uint32_t length = beatEnd_ - beatFirst_;
+  const double body = (sample_->sampleRate ? sample_->sampleRate : outputSampleRate_) * 0.045;
+  if (length <= body || length < bins) return;
+  int peaks[bins]{};
+  int peak = 0;
+  for (unsigned i = 0; i < bins; ++i) {
+    const uint32_t first = (uint64_t)length * i / bins;
+    const uint32_t end = (uint64_t)length * (i + 1) / bins;
+    const unsigned n = std::min<unsigned>(probes, end - first);
+    for (unsigned p = 0; p < n; ++p) {
+      const uint32_t offset = first + (uint64_t)(end - first) * p / n;
+      const uint32_t frame = direction_ > 0 ? beatFirst_ + offset : beatEnd_ - 1 - offset;
+      const int16_t* pcm = sample_->data + (size_t)frame * sample_->channels;
+      peaks[i] = std::max(peaks[i], sample_->channels == 1 ? abs(pcm[0])
+                                                      : std::max(abs(pcm[0]), abs(pcm[1])));
+    }
+    peak = std::max(peak, peaks[i]);
+  }
+  const int quiet = std::max(24, peak / 70);
+  unsigned last = bins;
+  while (last && peaks[last - 1] <= quiet) --last;
+  // Keep intentional gaps, including isolated 808 hits, at their natural decay.
+  if (last != bins) return;
+  unsigned first = last;
+  while (first && peaks[first - 1] <= peak / 3) --first;
+  if (last - first < 3) return;
+  const int beginning = peaks[first];
+  if (beginning <= quiet || peaks[last - 1] * 4 > beginning * 3) return;
+  beatTailStart_ = std::max(body, (double)length * first / bins);
+  beatTailEnd_ = (double)length * last / bins;
+  if (beatTailEnd_ - beatTailStart_ < pitchStep_ * 64) beatTailEnd_ = 0;
 }
 
 void SampleVoice::beatFrame(float* output) {
@@ -726,12 +781,13 @@ void SampleVoice::beatFrame(float* output) {
     beatDirection_ = direction_;
     beatElapsed_ = 0;
     beatWarmup_ = 0;
+    prepareBeatTail();
   }
   const double sourceLength = beatEnd_ - beatFirst_;
   const double outward = direction_ > 0 ? beatEnd_ - position_ : position_ - beatFirst_ + 1;
   const double origin = direction_ > 0 ? beatFirst_ : beatEnd_ - 1;
   const double signedPitch = direction_ * pitchStep_;
-  const double attack = std::min(sourceLength, outputSampleRate_ * 0.012 * pitchStep_);
+  const double attack = beatTailStart_;
   const double natural = beatElapsed_ * pitchStep_;
   const double remaining = outward / step_;
   auto read = [&](double pos, int ch) {
@@ -739,9 +795,9 @@ void SampleVoice::beatFrame(float* output) {
     // Never interpolate into the following event.
     return sampleAt(std::min(pos, beatEnd_ - 1.0), ch);
   };
-  const double tail = sourceLength - attack;
-  if (algorithm_ == SampleAlgorithm::BeatPro && natural >= attack && tail >= pitchStep_ * 32 &&
-      step_ < pitchStep_) {
+  const double tail = beatTailEnd_ - attack;
+  const bool stretchingTail = natural >= attack && tail > 0 && step_ < pitchStep_;
+  if (stretchingTail) {
     const double tailElapsed = beatElapsed_ - attack / pitchStep_;
     const double total = tailElapsed + remaining;
     const double nominal = origin + direction_ * (attack + tail * tailElapsed / total);
@@ -751,9 +807,12 @@ void SampleVoice::beatFrame(float* output) {
       beatWarmup_ = 1;
     }
     timingGrainFrame(output, nominal, signedPitch, beatHop_, true, [&](double pos, int ch) {
-      return read(direction_ * (pos - origin) < attack ? origin + direction_ * attack : pos, ch);
+      const double offset = direction_ * (pos - origin);
+      if (offset >= beatTailEnd_) return 0.0f;
+      return read(offset < attack ? origin + direction_ * attack : pos, ch);
     });
   } else {
+    beatWarmup_ = 0;
     const double pos = origin + direction_ * natural;
     output[0] = read(pos, 0);
     output[1] = sample_->channels == 1 ? output[0] : read(pos, 1);
@@ -761,8 +820,10 @@ void SampleVoice::beatFrame(float* output) {
   // Limit the old tail before the next attack and fade to silence when Beat
   // exhausts a segment early. No fades are applied to the incoming attack.
   const double naturalRemaining = (sourceLength - natural) / pitchStep_;
-  const double fadeRemaining = beatWarmup_ ? remaining : std::min(remaining, naturalRemaining);
-  const float gain = (float)std::clamp(fadeRemaining / std::max(1.0, outputSampleRate_ * 0.002), 0.0, 1.0);
+  const double fadeRemaining = stretchingTail ? remaining : std::min(remaining, naturalRemaining);
+  // When the tail is still audible, ease it out rather than hard-cut it.
+  const double fadeSeconds = stretchingTail ? 0.012 : 0.002;
+  const float gain = (float)std::clamp(fadeRemaining / std::max(1.0, outputSampleRate_ * fadeSeconds), 0.0, 1.0);
   output[0] *= gain;
   output[1] *= gain;
   ++beatElapsed_;

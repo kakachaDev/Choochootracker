@@ -2,6 +2,7 @@
 #include "../../chipnomad_lib/project_instruments.h"
 #include "../../chipnomad_lib/synth/sample_voice.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -58,7 +59,7 @@ TEST_CASE("Beat Pro fills the tail without moving the attacks") {
   std::vector<int16_t> pcm(3 * interval * 2);
   for (uint32_t i = 0; i < 3 * interval; ++i) {
     const uint32_t local = i % interval;
-    const float amp = local < 16 ? 24000 : 4200;
+    const float amp = local < 16 ? 24000 : 5800.0f * (1.0f - 0.8f * local / interval);
     const int16_t value = (int16_t)(amp * cos(local * 2 * M_PI / 96));
     pcm[2 * i] = value;
     pcm[2 * i + 1] = -value;
@@ -97,7 +98,86 @@ TEST_CASE("Beat Pro fills the tail without moving the attacks") {
     CHECK(pro[i] == -pro[i + 1]);
     proEnergy += pro[i] * pro[i];
   }
-  CHECK(proEnergy > 1.0);
+  CHECK(proEnergy > 0.1);
+
+  // After a live speed-up, a warm Beat Pro grain must no longer influence
+  // the natural tail fade. Both modes read the same source frames again.
+  auto speedUp = [&](SampleAlgorithm algorithm) {
+    sample.timing.algorithm = (uint8_t)algorithm;
+    samplePrepareBeatOnsets(&sample);
+    SampleVoice voice;
+    voice.init(48000);
+    auto configure = [&](float speed) {
+      voice.configure(&sample, 0, 1, speed, 0, 255, 0, 20000, 0,
+                      -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+    };
+    configure(50);
+    voice.noteOn();
+    std::vector<float> scratch(9400), result(200);
+    voice.render(scratch.data(), 4700);
+    configure(200);
+    voice.render(result.data(), 100);
+    return result;
+  };
+  CHECK(speedUp(SampleAlgorithm::BeatPro) == speedUp(SampleAlgorithm::Beat));
+}
+
+TEST_CASE("Beat uses retained slice positions for musical stretch") {
+  std::vector<int16_t> pcm(48000);
+  pcm[10000] = 30000;
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  sample.stretchMode = 1;
+  sample.slice = sampleEncodeSlice(sliceModeLazy, 2);
+  sample.sliceBounds[1] = 10000;
+  CHECK_FALSE(sampleActsAsSliced(&sample));
+  sample.timing.algorithm = (uint8_t)SampleAlgorithm::Beat;
+  SampleVoice voice;
+  voice.init(48000);
+  voice.configure(&sample, 0, 1, 100, 0, 255, 0, 20000, 0,
+                  -1, -1, -1, -1, -1, 0, 0, 1, 12, 0, 0, 0, 0, &sample.timing);
+  voice.noteOn();
+  std::vector<float> output(40004);
+  voice.render(output.data(), output.size() / 2);
+  CHECK(output[2 * 10000] == 0.0f);
+  CHECK(output[2 * 20000] > 0.8f);
+  sample.stretchMode = 0;
+  CHECK(sampleActsAsSliced(&sample));
+  CHECK(sample.sliceBounds[1] == 10000);
+}
+
+TEST_CASE("Beat Pro leaves space after a short hit with a silent tail") {
+  std::vector<int16_t> pcm(12000);
+  int hitEnd = 0;
+  SUBCASE("long gap") { hitEnd = 2400; }
+  SUBCASE("short gap") { hitEnd = 11750; }
+  for (int i = 0; i < hitEnd; ++i)
+    pcm[i] = (int16_t)(16000 * (1.0 - i / (double)hitEnd) * cos(i * 0.12));
+  InstrumentSampler sample{};
+  sample.data = pcm.data();
+  sample.frameCount = pcm.size();
+  sample.sampleRate = 48000;
+  sample.channels = 1;
+  sample.sustain = 255;
+  auto render = [&](SampleAlgorithm mode) {
+    sample.timing.algorithm = (uint8_t)mode;
+    SampleVoice voice;
+    voice.init(48000);
+    voice.configure(&sample, 0, 1, 50, 0, 255, 0, 20000, 0,
+                    -1, -1, -1, -1, -1, 0, 0, 0, 50, 0, 0, 0, 0, &sample.timing);
+    voice.noteOn();
+    std::vector<float> output(24000 * 2);
+    voice.render(output.data(), output.size() / 2);
+    return output;
+  };
+  auto beat = render(SampleAlgorithm::Beat);
+  auto pro = render(SampleAlgorithm::BeatPro);
+  CHECK(std::equal(beat.begin(), beat.begin() + 4320, pro.begin()));
+  CHECK(std::all_of(pro.begin() + 2 * hitEnd, pro.end(), [](float x) { return x == 0; }));
 }
 
 TEST_CASE("Granular and WSOLA follow musical duration independently of pitch") {

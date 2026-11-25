@@ -536,7 +536,7 @@ TEST_CASE("Sampler Fine resumes after leaving Repitch") {
   CHECK(engine.voice()->playbackFrame() == doctest::Approx(882 * std::pow(2.0, 50.0 / 1200.0)));
 }
 
-TEST_CASE("Sampler timing and loop start survive save and load; missing fields use legacy defaults") {
+TEST_CASE("Sampler timing survives save and load and migrates old algorithms") {
   Project saved, loaded;
   projectInit(&saved);
   projectInit(&loaded);
@@ -548,6 +548,11 @@ TEST_CASE("Sampler timing and loop start survive save and load; missing fields u
   std::strcpy(saved.pitchTable.noteNames[0], "C-4");
   saved.pitchTable.values[0] = 1000;
   getInstrumentFunctions(InstrumentType::Sample).init(&saved.instruments[0]);
+  for (int i : {1, 2}) {
+    getInstrumentFunctions(InstrumentType::Sample).init(&saved.instruments[i]);
+    CHECK(saved.instruments[i].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Granular);
+  }
+  saved.instruments[2].chip.sample.stretchMode = 5;
   auto& original = saved.instruments[0].chip.sample;
   original.loopStart = 0x40;
   original.timing.algorithm = (uint8_t)SampleAlgorithm::BeatPro;
@@ -587,9 +592,12 @@ TEST_CASE("Sampler timing and loop start survive save and load; missing fields u
   REQUIRE(projectLoad(&missing, stripped) == 0);
   CHECK(missing.instruments[0].type == InstrumentType::Sample);
   CHECK(missing.instruments[0].chip.sample.loopStart == 0);
-  CHECK(missing.instruments[0].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Legacy);
+  CHECK(missing.instruments[0].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Spectral);
   CHECK(missing.instruments[0].chip.sample.timing.finePitch == 0);
   CHECK(missing.instruments[0].chip.sample.speedAlgorithm == 1);
+  CHECK(missing.instruments[1].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Granular);
+  CHECK(missing.instruments[2].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Spectral);
+  CHECK(loaded.instruments[2].chip.sample.timing.algorithm == (uint8_t)SampleAlgorithm::Granular);
   std::remove(path);
   std::remove(stripped);
 }

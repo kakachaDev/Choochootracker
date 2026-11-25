@@ -8,6 +8,7 @@
 #include "audio_manager.h"
 #include "waveform_display.h"
 
+#include <math.h>
 #include <string.h>
 
 static int sampleButtonDown;
@@ -15,13 +16,14 @@ static constexpr int sourceValueX = kColumnValueX[0];
 static constexpr int sourceValueWidth = kFieldNumberWidth;
 static constexpr int finePitchX = sourceValueX + 5;
 static const char* const algorithmLabels[] = {
-  "Old Grn", "Old FFT", "Granular", "WSOLA", "Beat", "Beat Pro", "Spectral", "Repitch"
+  "", "Granular", "WSOLA", "Beat", "Beat Pro", "Spectral", "Repitch"
 };
 
 static uint8_t algorithmCell(const InstrumentSampler* sample) {
   auto algorithm = sampleNormalizeAlgorithm(sample->timing.algorithm);
-  return algorithm == SampleAlgorithm::Legacy ? (sample->speedAlgorithm == 1 ? 1 : 0)
-                                             : (uint8_t)algorithm + 1;
+  if (algorithm == SampleAlgorithm::Legacy)
+    algorithm = sample->stretchMode || sample->speedAlgorithm ? SampleAlgorithm::Spectral : SampleAlgorithm::Granular;
+  return (uint8_t)algorithm;
 }
 
 static bool pitchLocked(const InstrumentSampler* sample) {
@@ -95,7 +97,7 @@ static void onSampleLoaded(const char* path) {
     // parsed before the WAV load and does not go through this path.
     instrument->chip.sample.loopStart = 0;
     samplePrepareBeatOnsets(&instrument->chip.sample);
-    if (cueCount > 0 && !instrument->chip.sample.stretchMode &&
+    if (cueCount > 0 &&
         sampleDecodeSliceMode(instrument->chip.sample.slice) == sliceModeOff) {
       // Cues seed an AUTO-mode sample with manual bounds: the sentinel
       // count matches the cue count and playback stays full-sample until
@@ -237,9 +239,16 @@ static void drawField(int col, int row, CellState state) {
       if (!col) {
         // Speed is inert while Stretch drives the duration: dim it.
         if (stretchOn) gfxSetFgColor(appSettings.colorScheme.textEmpty);
-        const uint8_t speed = controlFromRange(sample->speedPercent, 500);
-        if (stretchOn) gfxPrint(sourceValueX, 11, byteToHex(speed));
-        else fieldDrawNumber(sourceValueX, 11, speed, state, -1.0f, false, instrumentLivePosition(liveSource1));
+        gfxPrintf(sourceValueX, 11, "%u.%02ux", (unsigned)sample->speedPercent / 100,
+                  (unsigned)sample->speedPercent % 100);
+        if (!stretchOn) {
+          const float position = controlFromRange(sample->speedPercent, 500) / 255.0f;
+          const float live = instrumentLivePosition(liveSource1);
+          if (live < 0.0f || fabsf(live - position) < 1.5f / 255.0f)
+            fieldDrawBar(sourceValueX + 5, 11, sourceValueWidth - 5, position, state);
+          else
+            fieldDrawBar(sourceValueX + 5, 11, sourceValueWidth - 5, live, state, false, position);
+        }
       }
       break;
     case 8: gfxPrint(sourceValueX, 12, algorithmLabels[algorithmCell(sample)]); break;
@@ -280,10 +289,6 @@ static int onEdit(int col, int row, CellEditAction action) {
       handled = edit8noLast(action, &index, 1, 0, 6);
       if (handled) {
         sample->stretchMode = index;
-        // Stretch and Slice are mutually exclusive: enabling one disables
-        // the other (the sentinel's mode resets to Off; bounds stay in
-        // memory so toggling back restores them).
-        if (sample->stretchMode) sample->slice = 0;
         projectModified = 1;
         // Repaint the dimmed Speed field and the new Stretch value.
         screenFullRedraw(&screenInstrumentSample);
@@ -303,9 +308,10 @@ static int onEdit(int col, int row, CellEditAction action) {
       break;
     case 8: {
       uint8_t algorithm = algorithmCell(sample);
-      handled = edit8noLast(action, &algorithm, 1, 0, (uint8_t)SampleAlgorithm::Repitch + 1);
+      handled = edit8noLast(action, &algorithm, 1, (uint8_t)SampleAlgorithm::Granular,
+                           (uint8_t)SampleAlgorithm::Repitch);
       if (handled) {
-        const auto selected = algorithm < 2 ? SampleAlgorithm::Legacy : (SampleAlgorithm)(algorithm - 1);
+        const auto selected = (SampleAlgorithm)algorithm;
         if (selected == SampleAlgorithm::Beat || selected == SampleAlgorithm::BeatPro) {
           audioManager.pause();
           sample->timing.algorithm = (uint8_t)selected;
@@ -314,7 +320,7 @@ static int onEdit(int col, int row, CellEditAction action) {
           audioManager.resume();
         } else {
           sample->timing.algorithm = (uint8_t)selected;
-          if (algorithm < 2) sample->speedAlgorithm = algorithm;
+          sample->speedAlgorithm = selected == SampleAlgorithm::Spectral;
         }
         screenFullRedraw(&screenInstrumentSample);
       }

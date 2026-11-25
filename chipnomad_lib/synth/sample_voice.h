@@ -87,6 +87,9 @@ class SampleVoice {
   double timingReadStep_[2]{};
   uint32_t timingAge_[2]{};
   uint32_t beatFirst_ = 0, beatEnd_ = 0;
+  bool beatUsesSlices_ = false;
+  double beatTailStart_ = 0, beatTailEnd_ = 0;
+  void prepareBeatTail();
   int beatDirection_ = 0;
   uint64_t beatElapsed_ = 0;
   uint32_t beatHop_ = 1;

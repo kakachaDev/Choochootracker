@@ -290,6 +290,7 @@ static int loadInstrumentSoundFont(FILE* file, Instrument* instrument) {
 
 static int loadInstrumentSample(FILE* file, Instrument* instrument) {
   InstrumentSampler* sample = &instrument->chip.sample;
+  sample->timing.algorithm = (uint8_t)SampleAlgorithm::Legacy;
   while (1) {
     char* line = peekLine(file);
     if (line == NULL || line[0] == '#') break;
@@ -339,6 +340,9 @@ static int loadInstrumentSample(FILE* file, Instrument* instrument) {
   if (sample->autoSensitivity < 1 || sample->autoSensitivity > 99) sample->autoSensitivity = 50;
   if (sample->stretchMode > 6) sample->stretchMode = 0;
   if (sample->speedAlgorithm > 1) sample->speedAlgorithm = 0;
+  if (sampleNormalizeAlgorithm(sample->timing.algorithm) == SampleAlgorithm::Legacy)
+    sample->timing.algorithm = (uint8_t)(sample->stretchMode || sample->speedAlgorithm
+      ? SampleAlgorithm::Spectral : SampleAlgorithm::Granular);
   return 0;
 }
 

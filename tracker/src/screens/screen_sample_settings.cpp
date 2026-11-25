@@ -62,17 +62,22 @@ static inline int fieldY(int row) {
 }
 
 // Slice row: one row hosting four value cells - Mode / Count / Slice /
-// Frame. The label sits at x=0; values start at x=6. No per-cell labels,
+// Frame. Align the first value with the START labels in rows above. No per-cell labels,
 // per the "only value boxes" rule.
-static constexpr int sliceModeX = 6;
+static constexpr int sliceModeX = markerLabelX;
 static constexpr int sliceModeW = 5;   // OFF / EQUAL / AUTO / LAZY
-static constexpr int sliceNumX = 12;
+static constexpr int sliceNumX = sliceModeX + 6;
 static constexpr int sliceNumW = 2;    // total slice count
-static constexpr int sliceBrowseX = 15;
+static constexpr int sliceBrowseX = sliceNumX + 3;
 static constexpr int sliceBrowseW = 2; // current slice index, 1-indexed
-static constexpr int sliceFrameX = 18;
+static constexpr int sliceFrameX = sliceBrowseX + 3;
 static constexpr int sliceFrameW = 6;  // start frame of the current slice
 static const char* sliceModeLabels[] = {"OFF", "EQUAL", "AUTO", "LAZY"};
+int sampleSettingsSliceTouchColumn(int x, int y) {
+  if (y != fieldY(4) || x < sliceModeX || x >= sliceFrameX + sliceFrameW) return -1;
+  return x < sliceNumX ? 0 : x < sliceBrowseX ? 1 : x < sliceFrameX ? 2 : 3;
+}
+
 // Session-only "current slice" being edited (0-based index into
 // sliceBounds). Never saved with the project.
 static int currentSlice;
@@ -152,6 +157,16 @@ static void sampleBasenameSansExt(const char* path, char* out, size_t outSize) {
 
 static InstrumentSampler* currentSample(void) {
   return &chipnomadState->project.instruments[cInstrument].chip.sample;
+}
+
+static bool beatSliceMarkers() {
+  const auto* sample = currentSample();
+  const auto algo = sampleNormalizeAlgorithm(sample->timing.algorithm);
+  return sample->stretchMode && (algo == SampleAlgorithm::Beat || algo == SampleAlgorithm::BeatPro);
+}
+
+static bool sliceControlsDisabled() {
+  return currentSample()->stretchMode && !beatSliceMarkers();
 }
 
 // The frame the LOOP START marker plays at: the normalized value mapped
@@ -864,6 +879,7 @@ static void updateSamplePreview(const InstrumentSample* sample, const SampleEdit
   gfxBitmapClear(markers);
   const int boundsPopulated = sample->sliceBounds[0] != 0 ||
     (slices > 1 && sample->sliceBounds[1] != 0);
+  const bool dashed = beatSliceMarkers();
   if (slices) {
     for (int i = 0; i < slices; ++i) {
       uint32_t position;
@@ -879,6 +895,7 @@ static void updateSamplePreview(const InstrumentSample* sample, const SampleEdit
       if (x < 0) continue;
       const uint8_t brightness = i == currentSlice ? 255 : 160;
       for (int y = 0; y < height; ++y) {
+        if (dashed && (y / 3) % 2) continue;
         markers->data[y * width + x] = brightness;
         if (x + 1 < width) markers->data[y * width + x + 1] = brightness;
       }
@@ -894,7 +911,7 @@ static void updateSamplePreview(const InstrumentSample* sample, const SampleEdit
   uint32_t sliceStart = 0;
   uint32_t sliceEnd = 0;
   int sliceHasRange = 0;
-  if (currentSlice >= 0 && currentSlice < slices) {
+  if (!sample->stretchMode && currentSlice >= 0 && currentSlice < slices) {
     sliceStart = boundsPopulated
       ? sample->sliceBounds[currentSlice]
       : startFrame + (uint32_t)((uint64_t)(endFrame > startFrame ? (endFrame - startFrame) : frameCount) * currentSlice / slices);
@@ -985,7 +1002,7 @@ static void drawSamplePreview(void) {
   }
   // Draw the slice markers on top (dark orange, 2px wide)
   if (sampleSliceMarkerBitmap) {
-    gfxSetFgColor(0xFF8C00); // Dark orange
+    gfxSetFgColor(beatSliceMarkers() ? 0xFFFF00 : sliceControlsDisabled() ? 0xA0A0A0 : 0xFF8C00);
     gfxDrawBitmap(sampleSliceMarkerBitmap, 0, previewRow);
   }
 }
@@ -1191,14 +1208,14 @@ static void settingsDrawField(int col, int row, CellState state) {
     }
     return;
   }
-  // Row 4: Slice - Mode / Count / Slice / Frame cells. All four are inert
-  // while Stretch drives the duration: dim them. While the LAZY
+  // Row 4: Slice - Mode / Count / Slice / Frame. Only Beat modes can
+  // edit the marks while Stretch drives duration. While the LAZY
   // playback-drop is armed, the Frame cell dims too - slices are being
   // placed by the playback marker, not edited by hand.
   {
     const SliceMode mode = sampleDecodeSliceMode(sample->slice);
     const uint8_t count = sampleDecodeSliceCount(sample->slice);
-    const int dimmed = sample->stretchMode != 0 ||
+    const int dimmed = sliceControlsDisabled() ||
       (sampleLazyPlaybackActive && mode == sliceModeLazy && col == 3);
     if (col == 0) {
       gfxClearRect(sliceModeX, fieldY(row), sliceModeW, 1);
@@ -1740,7 +1757,8 @@ static int settingsToggleEditorPlayback(InstrumentSample* sample) {
 // fxSLP=0 forces one-shot playback; the preview stops when the key is
 // released (app.cpp auto-stop) or another preview replaces it.
 static void settingsSlicePreviewCurrent(InstrumentSample* sample) {
-  if (sample->stretchMode != 0) return;
+  // With Stretch enabled, slices are timing marks rather than pitched notes.
+  if (sample->stretchMode) return;
   if (!sample->data || sample->frameCount == 0) return;
   if (sampleDecodeSliceMode(sample->slice) == sliceModeOff) return;
   if (sampleLazyPlaybackActive) return; // LAZY playback-drop owns EDIT
@@ -1900,7 +1918,6 @@ static int settingsSliceModeEdit(InstrumentSample* sample, CellEditAction action
     if (count == 0) count = 4;
     settingsRunAutoDetect(sample, count);
     // settingsRunAutoDetect already repainted; skip the shared repaint.
-    if (nextMode != sliceModeOff) sample->stretchMode = 0;
     return 1;
   } else {
     // EQUAL: even division. The count defaults to the previous count or 4.
@@ -1908,8 +1925,6 @@ static int settingsSliceModeEdit(InstrumentSample* sample, CellEditAction action
     if (count == 0) count = 4;
     sampleSliceInitEven(sample, (SliceMode)nextMode, count);
   }
-  // Stretch and Slice are mutually exclusive: enabling one disables the other.
-  if (nextMode != sliceModeOff) sample->stretchMode = 0;
   settingsClampCurrentSlice(sample);
   projectModified = 1;
   settingsRepaintSlice(sample, 0);
@@ -2039,7 +2054,7 @@ static int settingsSliceFrameEdit(InstrumentSample* sample, CellEditAction actio
 // every slice mode).
 static int settingsOnEditSlice(int col, CellEditAction action, InstrumentSample* sample) {
   // Slice is inert while Stretch drives the duration.
-  if (sample->stretchMode != 0) return 0;
+  if (sliceControlsDisabled()) return 0;
   if (action == CellEditAction::clear && col >= 2) {
     // EDIT+OPT deletes the current slice from the browser or Frame cell
     return settingsSliceDeleteCurrent(sample);
@@ -2330,7 +2345,7 @@ static int settingsIsCellValid(int col, int row) {
     if (col == 2 && !recordSourceIsExternal(recordSource)) return 0;
   }
   if (row == 1 && col == 1 && recordState != RecordState::complete) return 0;
-  if (row == 4 && sample->stretchMode != 0) return 0;
+  if (row == 4 && sliceControlsDisabled()) return 0;
   if (row == 4 && col == 1 &&
       sampleDecodeSliceMode(sample->slice) == sliceModeLazy) return 0;
   if (row == 7 && col == 0) {
@@ -2423,7 +2438,7 @@ static void setup(int input) {
   // Legacy AUTO sentinel with empty bounds (old project saved before
   // bounds existed): populate them here on the UI thread, never on the
   // audio thread (detection allocates). The sentinel count is the target.
-  if (sampleDecodeSliceMode(sample->slice) == sliceModeAuto &&
+  if (!sliceControlsDisabled() && sampleDecodeSliceMode(sample->slice) == sliceModeAuto &&
       sample->sliceBounds[0] == 0 &&
       !(sampleDecodeSliceCount(sample->slice) > 1 && sample->sliceBounds[1] != 0)) {
     settingsRunAutoDetect(sample, sampleDecodeSliceCount(sample->slice));
@@ -2433,7 +2448,7 @@ static void setup(int input) {
 static void fullRedraw(void) {
   // The cursor persists across screens: if it is parked on Slice while Stretch
   // is active, move it up so it never rests on a disabled cell.
-  if (screenSampleSettingsData.cursorRow == 4 && currentSample()->stretchMode != 0) {
+  if (screenSampleSettingsData.cursorRow == 4 && sliceControlsDisabled()) {
     screenSampleSettingsData.cursorRow = 3;
   }
   // Same for the File row: the previous instrument may have left the cursor
@@ -2651,7 +2666,7 @@ static int onInput(int isKeyDown, int keys, int tapCount) {
   }
   // LAZY playback-drop stays LAZY-only: EDIT click drops a slice at the
   // playback marker.
-  if (sampleDecodeSliceMode(sample->slice) == sliceModeLazy &&
+  if (!sliceControlsDisabled() && sampleDecodeSliceMode(sample->slice) == sliceModeLazy &&
       sampleLazyPlaybackActive && isKeyDown && keys == keyEdit && lazyEditArmed &&
       (tapCount == 1 || tapCount == 2)) {
     settingsDropSliceAtPlayback(sample);
